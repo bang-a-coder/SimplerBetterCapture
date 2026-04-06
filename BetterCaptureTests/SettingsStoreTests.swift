@@ -351,6 +351,17 @@ struct SettingsStoreTests {
         #expect(store.generateFilename().hasSuffix(".mp4"))
     }
 
+    @Test func generateFilenameUsesAudioExtensionForAudioOnly() {
+        let store = makeStore()
+        store.recordVideo = false
+        store.recordAudio = true
+        store.captureSystemAudio = true
+        #expect(store.generateFilename().hasSuffix(".m4a"))
+
+        store.audioCodec = .pcm
+        #expect(store.generateFilename().hasSuffix(".caf"))
+    }
+
     // MARK: - Output Directory
 
     @Test func defaultOutputDirectoryIsMoviesBetterCapture() {

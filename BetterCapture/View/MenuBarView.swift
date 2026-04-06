@@ -20,12 +20,14 @@ struct MenuBarView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Permission status banner (only when idle)
-            if !isRecording,
-               viewModel.permissionService.screenRecordingState != .granted ||
-                (viewModel.settings.captureMicrophone && viewModel.permissionService.microphoneState != .granted) {
+            if !isRecording && (
+                (viewModel.settings.needsSharedContent && viewModel.permissionService.screenRecordingState != .granted) ||
+                (viewModel.settings.recordAudio && viewModel.settings.captureMicrophone && viewModel.permissionService.microphoneState != .granted)
+            ) {
                 PermissionStatusBanner(
                     permissionService: viewModel.permissionService,
-                    showMicrophonePermission: viewModel.settings.captureMicrophone
+                    showScreenRecordingPermission: viewModel.settings.needsSharedContent,
+                    showMicrophonePermission: viewModel.settings.recordAudio && viewModel.settings.captureMicrophone
                 )
                 MenuBarDivider()
             }
@@ -57,12 +59,15 @@ struct MenuBarView: View {
 
             MenuBarDivider()
 
-            // Content Selection
-            ContentSelectionButton(viewModel: viewModel) { dismiss() }
-                .disabled(isRecording)
+            if viewModel.requiresManualContentSelection {
+                ContentSelectionButton(viewModel: viewModel) { dismiss() }
+                    .disabled(isRecording)
+            } else if viewModel.usesAutomaticSharedAudioDisplay {
+                AutomaticDisplayAudioRow()
+            }
 
             // Preview thumbnail
-            if viewModel.hasContentSelected {
+            if viewModel.settings.recordVideo, viewModel.hasContentSelected {
                 PreviewThumbnailView(
                     previewImage: currentPreview,
                     isLivePreviewActive: viewModel.previewService.isCapturing,
@@ -84,21 +89,23 @@ struct MenuBarView: View {
                     currentPreview = viewModel.previewService.previewImage
                 }
 
-                Button {
-                    Task {
-                        await viewModel.resetAreaSelection()
+                if viewModel.requiresManualContentSelection {
+                    Button {
+                        Task {
+                            await viewModel.resetAreaSelection()
+                        }
+                    } label: {
+                        Text("Reset Selection")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(.gray.opacity(0.15), in: .rect(cornerRadius: 6))
                     }
-                } label: {
-                    Text("Reset Selection")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(.gray.opacity(0.15), in: .rect(cornerRadius: 6))
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 12)
+                    .disabled(isRecording)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 12)
-                .disabled(isRecording)
             }
 
             MenuBarDivider()
@@ -107,10 +114,12 @@ struct MenuBarView: View {
             Group {
                 VideoSettingsSection(settings: viewModel.settings)
 
-                PresenterOverlaySettingsSection(
-                    settings: viewModel.settings,
-                    cameraDeviceService: viewModel.cameraDeviceService
-                )
+                if viewModel.settings.recordVideo {
+                    PresenterOverlaySettingsSection(
+                        settings: viewModel.settings,
+                        cameraDeviceService: viewModel.cameraDeviceService
+                    )
+                }
 
                 AudioSettingsSection(
                     settings: viewModel.settings,
@@ -377,6 +386,7 @@ struct ContentSelectionButton: View {
 /// A banner showing missing permissions with buttons to open System Settings
 struct PermissionStatusBanner: View {
     let permissionService: PermissionService
+    let showScreenRecordingPermission: Bool
     let showMicrophonePermission: Bool
 
     var body: some View {
@@ -391,7 +401,7 @@ struct PermissionStatusBanner: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
 
-            if permissionService.screenRecordingState != .granted {
+            if showScreenRecordingPermission && permissionService.screenRecordingState != .granted {
                 PermissionRow(
                     title: "Screen Recording",
                     isGranted: false
@@ -410,6 +420,35 @@ struct PermissionStatusBanner: View {
             }
         }
         .padding(.bottom, 8)
+    }
+}
+
+struct AutomaticDisplayAudioRow: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(.gray.opacity(0.2))
+                    .frame(width: 24, height: 24)
+
+                Image(systemName: "display")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Using Main Display")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text("Shared system audio uses the full display by default.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 }
 

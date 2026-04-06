@@ -823,7 +823,7 @@ final class SettingsStore {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HH.mm.ss"
         let timestamp = formatter.string(from: Date())
-        return "BetterCapture_\(timestamp).\(containerFormat.fileExtension)"
+        return "BetterCapture_\(timestamp).\(recordingOutputFileExtension)"
     }
 
     /// Returns the full output URL for a new recording

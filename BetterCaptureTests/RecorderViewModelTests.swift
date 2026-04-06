@@ -34,6 +34,22 @@ struct RecorderViewModelTests {
         #expect(viewModel.canStartRecording == false)
     }
 
+    @Test func canStartMicrophoneOnlyAudioWithoutContentFilter() {
+        let viewModel = RecorderViewModel()
+        viewModel.settings.recordVideo = false
+        viewModel.settings.recordAudio = true
+        viewModel.settings.captureMicrophone = true
+        #expect(viewModel.canStartRecording == true)
+    }
+
+    @Test func canStartSharedAudioWithoutManualSelection() {
+        let viewModel = RecorderViewModel()
+        viewModel.settings.recordVideo = false
+        viewModel.settings.recordAudio = true
+        viewModel.settings.captureSystemAudio = true
+        #expect(viewModel.canStartRecording == true)
+    }
+
     @Test func hasNoContentSelectedByDefault() {
         let viewModel = RecorderViewModel()
         #expect(viewModel.hasContentSelected == false)

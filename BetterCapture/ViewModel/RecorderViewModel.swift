@@ -49,11 +49,29 @@ final class RecorderViewModel {
     }
 
     var canStartRecording: Bool {
-        selectedContentFilter != nil && state == .idle
+        let hasAudioSourceEnabled = settings.captureSystemAudio || settings.captureMicrophone
+
+        guard state == .idle, settings.recordVideo || (settings.recordAudio && hasAudioSourceEnabled) else {
+            return false
+        }
+
+        if requiresManualContentSelection {
+            return selectedContentFilter != nil
+        }
+
+        return true
     }
 
     var hasContentSelected: Bool {
         selectedContentFilter != nil
+    }
+
+    var requiresManualContentSelection: Bool {
+        settings.recordVideo
+    }
+
+    var usesAutomaticSharedAudioDisplay: Bool {
+        settings.isAudioOnlyMode && settings.captureSystemAudio
     }
 
     var formattedDuration: String {
@@ -116,7 +134,10 @@ final class RecorderViewModel {
     /// Requests required permissions on app launch
     /// Only requests microphone permission if microphone capture is enabled
     func requestPermissionsOnLaunch() async {
-        await permissionService.requestPermissions(includeMicrophone: settings.captureMicrophone)
+        await permissionService.requestPermissions(
+            includeScreenRecording: settings.needsSharedContent,
+            includeMicrophone: settings.recordAudio && settings.captureMicrophone
+        )
     }
 
     /// Refreshes the current permission states
@@ -131,9 +152,9 @@ final class RecorderViewModel {
     func toggleRecording() async {
         if isRecording {
             await stopRecording()
-        } else if hasContentSelected {
+        } else if canStartRecording {
             await startRecording()
-        } else {
+        } else if requiresManualContentSelection {
             // No content selected — trigger selection based on the user's preferred mode
             switch ContentSelectionMode.current {
             case .pickContent:
@@ -141,6 +162,8 @@ final class RecorderViewModel {
             case .selectArea:
                 await presentAreaSelection()
             }
+        } else {
+            logger.warning("Cannot start recording with the current settings")
         }
     }
 
@@ -227,7 +250,7 @@ final class RecorderViewModel {
     /// Starts a new recording session
     func startRecording() async {
         guard canStartRecording else {
-            logger.warning("Cannot start recording: no content selected or already recording")
+            logger.warning("Cannot start recording with the current mode and source settings")
             return
         }
 
@@ -245,32 +268,59 @@ final class RecorderViewModel {
             await previewService.stopPreview()
             logger.info("Live preview stopped")
 
+            let captureFilter = try await resolveCaptureFilter()
+
+            if let captureFilter {
+                try await captureEngine.updateFilter(captureFilter)
+            }
+
             // Determine video size from filter
-            if let filter = selectedContentFilter {
-                videoSize = await getContentSize(from: filter)
+            if settings.recordVideo, let captureFilter {
+                videoSize = await getContentSize(from: captureFilter)
+            } else {
+                videoSize = .zero
             }
             logger.info("Video size: \(self.videoSize.width)x\(self.videoSize.height)")
 
             // Access security-scoped output directory before writing
             _ = settings.startAccessingOutputDirectory()
 
-            // Setup asset writer
             let outputURL = settings.generateOutputURL()
-            try assetWriter.setup(url: outputURL, settings: settings, videoSize: videoSize)
-            try assetWriter.startWriting()
-            logger.info("AssetWriter ready")
+
+            if settings.needsSharedContent {
+                try assetWriter.setup(
+                    url: outputURL,
+                    settings: settings,
+                    videoSize: videoSize,
+                    captureVideo: settings.recordVideo,
+                    separateAudioTracks: settings.usesSeparateAudioTracks
+                )
+                try assetWriter.startWriting()
+                logger.info("AssetWriter ready")
+            } else if settings.recordAudio && settings.captureMicrophone {
+                try assetWriter.startMicrophoneOnlyCapture(with: settings, url: outputURL)
+                logger.info("Microphone-only writer ready")
+            }
 
             // Start camera for Presenter Overlay before capture so the system detects it
-            if settings.presenterOverlayEnabled {
+            if settings.presenterOverlayEnabled && settings.recordVideo {
                 await cameraSession.start(deviceID: settings.selectedCameraID)
             }
 
-            // Start capture with the calculated video size
-            logger.info("Starting capture engine...")
-            try await captureEngine.startCapture(with: settings, videoSize: videoSize, sourceRect: selectedSourceRect)
+            if settings.needsSharedContent {
+                logger.info("Starting shared capture engine...")
+                try await captureEngine.startCapture(
+                    with: settings,
+                    videoSize: videoSize,
+                    sourceRect: selectedSourceRect,
+                    captureVideo: settings.recordVideo
+                )
+            } else if settings.recordAudio && settings.captureMicrophone {
+                logger.info("Starting microphone-only recording...")
+            }
 
             // Re-show the area selection border now that capture has started
-            if isAreaSelection, let screenRect = selectedScreenRect {
+            if settings.recordVideo, isAreaSelection, let screenRect = selectedScreenRect {
                 selectionBorderFrame.show(screenRect: screenRect)
             }
 
@@ -282,6 +332,7 @@ final class RecorderViewModel {
         } catch {
             state = .idle
             lastError = error
+            assetWriter.cancel()
             cameraSession.stop()
             selectionBorderFrame.dismiss()
             settings.stopAccessingOutputDirectory()
@@ -299,7 +350,9 @@ final class RecorderViewModel {
 
         do {
             // Stop capture and camera session
-            try await captureEngine.stopCapture()
+            if settings.needsSharedContent {
+                try await captureEngine.stopCapture()
+            }
             cameraSession.stop()
             isPresenterOverlayActive = false
 
@@ -343,7 +396,7 @@ final class RecorderViewModel {
 
     /// Starts the live preview stream (call when menu bar window opens)
     func startPreview() async {
-        guard !isRecording else { return }
+        guard !isRecording, settings.recordVideo, hasContentSelected else { return }
         await previewService.startPreview()
     }
 
@@ -408,6 +461,25 @@ final class RecorderViewModel {
         }
 
         return CGSize(width: 1920, height: 1080)
+    }
+
+    private func resolveCaptureFilter() async throws -> SCContentFilter? {
+        if let selectedContentFilter {
+            return selectedContentFilter
+        }
+
+        guard usesAutomaticSharedAudioDisplay else {
+            return nil
+        }
+
+        let content = try await SCShareableContent.current
+        guard let mainScreen = NSScreen.main,
+              let mainDisplayID = mainScreen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+              let display = content.displays.first(where: { $0.displayID == mainDisplayID }) ?? content.displays.first else {
+            throw CaptureError.noContentFilterSelected
+        }
+
+        return SCContentFilter(display: display, excludingWindows: [])
     }
 }
 

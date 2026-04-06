@@ -98,7 +98,12 @@ final class CaptureEngine: NSObject {
     ///   - settings: The settings store containing capture configuration
     ///   - videoSize: The dimensions for the captured video
     ///   - sourceRect: Optional rectangle for area selection (display points, top-left origin)
-    func startCapture(with settings: SettingsStore, videoSize: CGSize, sourceRect: CGRect? = nil) async throws {
+    func startCapture(
+        with settings: SettingsStore,
+        videoSize: CGSize,
+        sourceRect: CGRect? = nil,
+        captureVideo: Bool = true
+    ) async throws {
         guard let filter = contentFilter else {
             throw CaptureError.noContentFilterSelected
         }
@@ -131,7 +136,12 @@ final class CaptureEngine: NSObject {
         let filteredContent = try await contentFilterService.applySettings(to: filter, settings: settings)
         logger.info("Content filter applied, creating stream...")
 
-        let streamConfig = createStreamConfiguration(from: settings, contentSize: videoSize, sourceRect: sourceRect)
+        let streamConfig = createStreamConfiguration(
+            from: settings,
+            contentSize: videoSize,
+            sourceRect: sourceRect,
+            captureVideo: captureVideo
+        )
 
         stream = SCStream(filter: filteredContent, configuration: streamConfig, delegate: self)
 
@@ -139,8 +149,12 @@ final class CaptureEngine: NSObject {
             throw CaptureError.failedToCreateStream
         }
 
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoSampleQueue)
-        logger.info("Added screen output")
+        if captureVideo {
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoSampleQueue)
+            logger.info("Added screen output")
+        } else {
+            logger.info("Video output disabled for this capture session")
+        }
 
         if settings.captureSystemAudio {
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioSampleQueue)
@@ -152,7 +166,9 @@ final class CaptureEngine: NSObject {
             logger.info("Added microphone output (device: \(settings.selectedMicrophoneID ?? "default"))")
         }
 
-        logger.info("Stream config - capturesAudio: \(settings.captureSystemAudio), captureMicrophone: \(settings.captureMicrophone)")
+        logger.info(
+            "Stream config - captureVideo: \(captureVideo), capturesAudio: \(settings.captureSystemAudio), captureMicrophone: \(settings.captureMicrophone)"
+        )
         logger.info("Starting stream capture...")
         try await stream.startCapture()
         logger.info("Stream capture started successfully")
@@ -190,7 +206,12 @@ final class CaptureEngine: NSObject {
     ///   - settings: The settings store containing capture configuration
     ///   - contentSize: The output dimensions for the captured video
     ///   - sourceRect: Optional rectangle for area selection (display points, top-left origin)
-    private func createStreamConfiguration(from settings: SettingsStore, contentSize: CGSize, sourceRect: CGRect? = nil) -> SCStreamConfiguration {
+    private func createStreamConfiguration(
+        from settings: SettingsStore,
+        contentSize: CGSize,
+        sourceRect: CGRect? = nil,
+        captureVideo: Bool = true
+    ) -> SCStreamConfiguration {
         let config: SCStreamConfiguration
 
         switch settings.hdrPreset {
@@ -222,9 +243,13 @@ final class CaptureEngine: NSObject {
             config.captureDynamicRange = .SDR
         }
 
-        // Set output dimensions - required for proper capture
-        config.width = Int(contentSize.width)
-        config.height = Int(contentSize.height)
+        // Set output dimensions - required for proper capture when video is enabled.
+        // For audio-only shared-content captures, ScreenCaptureKit still expects
+        // a valid stream size even if the screen output is not consumed.
+        let width = max(Int(contentSize.width.rounded(.up)), 1)
+        let height = max(Int(contentSize.height.rounded(.up)), 1)
+        config.width = width
+        config.height = height
 
         // Set source rect for area selection (only works with display captures)
         if let sourceRect {
@@ -232,11 +257,14 @@ final class CaptureEngine: NSObject {
             logger.info("Source rect set: \(sourceRect.origin.x),\(sourceRect.origin.y) \(sourceRect.width)x\(sourceRect.height)")
         }
 
-        // Frame rate - native uses display sync (1/120 timescale)
-        if settings.frameRate == .native {
-            config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
-        } else {
-            config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(settings.frameRate.rawValue))
+        // Frame rate only matters when video is enabled.
+        if captureVideo {
+            // Native uses display sync (1/120 timescale)
+            if settings.frameRate == .native {
+                config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
+            } else {
+                config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(settings.frameRate.rawValue))
+            }
         }
 
         // Cursor visibility

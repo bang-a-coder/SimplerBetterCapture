@@ -76,13 +76,18 @@ final class PermissionService {
 
     // MARK: - Permission Requests
 
-    /// Requests required permissions on app launch
-    /// - Parameter includeMicrophone: Whether to also request microphone permission
-    func requestPermissions(includeMicrophone: Bool) async {
-        logger.info("Requesting permissions (includeMicrophone: \(includeMicrophone))...")
+    /// Requests required permissions on app launch.
+    /// - Parameters:
+    ///   - includeScreenRecording: Whether to also request screen recording permission
+    ///   - includeMicrophone: Whether to also request microphone permission
+    func requestPermissions(includeScreenRecording: Bool, includeMicrophone: Bool) async {
+        logger.info(
+            "Requesting permissions (includeScreenRecording: \(includeScreenRecording), includeMicrophone: \(includeMicrophone))..."
+        )
 
-        // Request screen recording permission first (synchronous)
-        requestScreenRecordingPermission()
+        if includeScreenRecording {
+            requestScreenRecordingPermission()
+        }
 
         // Request microphone permission only if needed (asynchronous)
         if includeMicrophone {

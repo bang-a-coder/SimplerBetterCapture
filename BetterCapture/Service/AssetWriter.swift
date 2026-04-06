@@ -16,6 +16,12 @@ import os
 /// Service responsible for writing captured media to disk using AVAssetWriter
 final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable {
 
+    private enum PostProcessingMode {
+        case none
+        case mixedAudio
+        case separateAudio
+    }
+
     // MARK: - Properties
 
     private var assetWriter: AVAssetWriter?
@@ -23,9 +29,12 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var audioInput: AVAssetWriterInput?
     private var microphoneInput: AVAssetWriterInput?
+    private var audioRecorder: AVAudioRecorder?
 
     private(set) var isWriting = false
     private(set) var outputURL: URL?
+    private var workingOutputURL: URL?
+    private var secondaryOutputURL: URL?
 
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "AssetWriter")
@@ -38,6 +47,14 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     /// increasing timestamps and protect the writer from timing glitches that
     /// occur when Presenter Overlay composites the camera into the stream.
     private var lastVideoPresentationTime: CMTime = .invalid
+    private var didReceiveVideoSample = false
+    private var didReceiveAudioSample = false
+    private var didReceiveMicrophoneSample = false
+    private var captureVideo = true
+    private var captureSystemAudio = false
+    private var captureMicrophone = false
+    private var separateAudioTracks = false
+    private var postProcessingMode: PostProcessingMode = .none
 
     /// The active HDR preset for this recording session, used to select the
     /// correct color properties for the output container and per-frame tagging.
@@ -57,53 +74,80 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     ///   - url: The output file URL
     ///   - settings: The settings store containing encoding configuration
     ///   - videoSize: The dimensions of the video
-    func setup(url: URL, settings: SettingsStore, videoSize: CGSize) throws {
-        // Ensure output directory exists
-        let directory = url.deletingLastPathComponent()
+    func setup(
+        url: URL,
+        settings: SettingsStore,
+        videoSize: CGSize,
+        captureVideo: Bool = true,
+        separateAudioTracks: Bool = true
+    ) throws {
+        self.captureVideo = captureVideo
+        self.captureSystemAudio = settings.captureSystemAudio
+        self.captureMicrophone = settings.captureMicrophone
+        self.separateAudioTracks = separateAudioTracks
+        self.postProcessingMode = determinePostProcessingMode(
+            captureVideo: captureVideo,
+            captureSystemAudio: settings.captureSystemAudio,
+            captureMicrophone: settings.captureMicrophone,
+            separateAudioTracks: separateAudioTracks
+        )
+
+        let finalOutputURL = normalizedOutputURL(for: url, settings: settings)
+        let captureURL = workingCaptureURL(for: finalOutputURL, needsPostProcessing: postProcessingMode != .none)
+        let directory = captureURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        // Remove existing file if present
-        if FileManager.default.fileExists(atPath: url.path()) {
-            try FileManager.default.removeItem(at: url)
+        for existingURL in [finalOutputURL, captureURL, secondaryOutputURL(for: finalOutputURL, settings: settings)] {
+            guard let existingURL, FileManager.default.fileExists(atPath: existingURL.path()) else {
+                continue
+            }
+            try FileManager.default.removeItem(at: existingURL)
         }
 
-        // Create asset writer
-        let fileType = settings.containerFormat == .mov ? AVFileType.mov : AVFileType.mp4
-        assetWriter = try AVAssetWriter(outputURL: url, fileType: fileType)
+        let fileType: AVFileType = if postProcessingMode != .none {
+            .mov
+        } else if captureVideo {
+            settings.containerFormat == .mov ? .mov : .mp4
+        } else {
+            settings.audioCodec == .aac ? .m4a : .caf
+        }
+
+        assetWriter = try AVAssetWriter(outputURL: captureURL, fileType: fileType)
 
         guard let assetWriter else {
             throw AssetWriterError.failedToCreateWriter
         }
 
-        // Configure video input
-        let videoSettings = createVideoSettings(from: settings, size: videoSize)
-        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput?.expectsMediaDataInRealTime = true
+        if captureVideo {
+            // Configure video input
+            let videoSettings = createVideoSettings(from: settings, size: videoSize)
+            videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+            videoInput?.expectsMediaDataInRealTime = true
 
-        if let videoInput, assetWriter.canAdd(videoInput) {
-            assetWriter.add(videoInput)
+            if let videoInput, assetWriter.canAdd(videoInput) {
+                assetWriter.add(videoInput)
 
-            // Create pixel buffer adaptor for appending raw pixel buffers from ScreenCaptureKit.
-            // Must match the pixel format configured on SCStreamConfiguration in CaptureEngine.
-            let pixelFormat: OSType =
-                (settings.captureHDR && settings.videoCodec.supportsHDR)
-                ? settings.videoCodec.hdrPixelFormat
-                : kCVPixelFormatType_32BGRA
+                // Create pixel buffer adaptor for appending raw pixel buffers from ScreenCaptureKit.
+                // Must match the pixel format configured on SCStreamConfiguration in CaptureEngine.
+                let pixelFormat: OSType =
+                    (settings.captureHDR && settings.videoCodec.supportsHDR)
+                    ? settings.videoCodec.hdrPixelFormat
+                    : kCVPixelFormatType_32BGRA
 
-            let sourcePixelBufferAttributes: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
-                kCVPixelBufferWidthKey as String: Int(videoSize.width),
-                kCVPixelBufferHeightKey as String: Int(videoSize.height)
-            ]
-            pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
-                assetWriterInput: videoInput,
-                sourcePixelBufferAttributes: sourcePixelBufferAttributes
-            )
+                let sourcePixelBufferAttributes: [String: Any] = [
+                    kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+                    kCVPixelBufferWidthKey as String: Int(videoSize.width),
+                    kCVPixelBufferHeightKey as String: Int(videoSize.height)
+                ]
+                pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+                    assetWriterInput: videoInput,
+                    sourcePixelBufferAttributes: sourcePixelBufferAttributes
+                )
+            }
         }
 
-        // Configure audio input for system audio
         if settings.captureSystemAudio {
-            let audioSettings = createAudioSettings(from: settings)
+            let audioSettings = createAudioSettings(for: settings.audioCodec)
             audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             audioInput?.expectsMediaDataInRealTime = true
 
@@ -112,9 +156,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             }
         }
 
-        // Configure microphone input as separate track
         if settings.captureMicrophone {
-            let micSettings = createAudioSettings(from: settings)
+            let micSettings = createAudioSettings(for: settings.audioCodec)
             microphoneInput = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings)
             microphoneInput?.expectsMediaDataInRealTime = true
 
@@ -128,13 +171,18 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             && (settings.videoCodec == .proRes422 || settings.videoCodec == .proRes4444)
         tagBuffersWithHDRColorimetry = isProResHDR
 
-        outputURL = url
+        outputURL = finalOutputURL
+        workingOutputURL = captureURL
+        secondaryOutputURL = secondaryOutputURL(for: finalOutputURL, settings: settings)
         hasStartedSession = false
         sessionStartTime = .zero
         lastVideoPresentationTime = .invalid
         frameCount = 0
+        didReceiveVideoSample = false
+        didReceiveAudioSample = false
+        didReceiveMicrophoneSample = false
 
-        logger.info("AssetWriter configured for output: \(url.lastPathComponent)")
+        logger.info("AssetWriter configured for output: \(captureURL.lastPathComponent)")
     }
 
     // MARK: - Writing
@@ -151,6 +199,30 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
         isWriting = true
         logger.info("AssetWriter started writing")
+    }
+
+    func startMicrophoneOnlyCapture(with settings: SettingsStore, url: URL) throws {
+        let finalURL = normalizedOutputURL(for: url, settings: settings)
+        let directory = finalURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        if FileManager.default.fileExists(atPath: finalURL.path()) {
+            try FileManager.default.removeItem(at: finalURL)
+        }
+
+        let recorder = try AVAudioRecorder(url: finalURL, settings: createAudioSettings(for: settings.audioCodec))
+        recorder.prepareToRecord()
+
+        guard recorder.record() else {
+            throw AssetWriterError.failedToStartWriting(nil)
+        }
+
+        audioRecorder = recorder
+        outputURL = finalURL
+        workingOutputURL = finalURL
+        secondaryOutputURL = nil
+        isWriting = true
+        logger.info("Microphone-only capture started: \(finalURL.lastPathComponent)")
     }
 
     // Track frame counts for debugging
@@ -227,6 +299,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             // Append using the pixel buffer adaptor
             if adaptor.append(pixelBuffer, withPresentationTime: presentationTime) {
                 lastVideoPresentationTime = presentationTime
+                didReceiveVideoSample = true
                 frameCount += 1
                 if frameCount == 1 {
                     logger.info("First video frame appended successfully")
@@ -265,6 +338,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
             if !audioInput.append(sampleBuffer) {
                 logger.error("Failed to append audio sample buffer")
+            } else {
+                didReceiveAudioSample = true
             }
         }
     }
@@ -280,8 +355,19 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
                 return
             }
 
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+            if !hasStartedSession {
+                assetWriter.startSession(atSourceTime: presentationTime)
+                sessionStartTime = presentationTime
+                hasStartedSession = true
+                logger.info("Session started at time: \(presentationTime.seconds)")
+            }
+
             if !microphoneInput.append(sampleBuffer) {
                 logger.error("Failed to append microphone sample buffer")
+            } else {
+                didReceiveMicrophoneSample = true
             }
         }
     }
@@ -290,16 +376,25 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
     /// Finishes writing and finalizes the output file
     func finishWriting() async throws -> URL {
+        if let audioRecorder, let outputURL {
+            audioRecorder.stop()
+            self.audioRecorder = nil
+            isWriting = false
+            return outputURL
+        }
+
         // First critical section: validate state and mark inputs as finished
-        let (writerToFinish, url): (AVAssetWriter, URL)
+        let (writerToFinish, finalURL, workingURL, secondaryURL, postProcessingMode): (
+            AVAssetWriter, URL, URL, URL?, PostProcessingMode
+        )
 
         do {
-            (writerToFinish, url) = try lock.withLockUnchecked {
+            (writerToFinish, finalURL, workingURL, secondaryURL, postProcessingMode) = try lock.withLockUnchecked {
                 guard let assetWriter, isWriting else {
                     throw AssetWriterError.writerNotReady
                 }
 
-                guard let url = outputURL else {
+                guard let outputURL, let workingOutputURL else {
                     throw AssetWriterError.noOutputURL
                 }
 
@@ -307,9 +402,14 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
                     "Finishing writing - status: \(assetWriter.status.rawValue), session started: \(self.hasStartedSession), frames written: \(self.frameCount)"
                 )
 
-                // Check if we actually started a session (received at least one frame)
-                guard hasStartedSession else {
-                    logger.error("No frames were written - session was never started")
+                let didWriteAnyMedia = self.didReceiveVideoSample
+                    || self.didReceiveAudioSample
+                    || self.didReceiveMicrophoneSample
+
+                // Check if we actually started a session (received at least one frame).
+                // Audio-only recordings are valid even when no video frames were written.
+                guard hasStartedSession, didWriteAnyMedia else {
+                    logger.error("No media samples were written - session was never started")
                     throw AssetWriterError.noFramesWritten
                 }
 
@@ -318,7 +418,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
                 audioInput?.markAsFinished()
                 microphoneInput?.markAsFinished()
 
-                return (assetWriter, url)
+                return (assetWriter, outputURL, workingOutputURL, self.secondaryOutputURL, self.postProcessingMode)
             }
         } catch AssetWriterError.noFramesWritten {
             // Cancel needs to be called outside the lock since it acquires its own lock
@@ -330,7 +430,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         await writerToFinish.finishWriting()
 
         // Second critical section: check final status and cleanup
-        return try lock.withLockUnchecked {
+        let captureURL = try lock.withLockUnchecked {
             guard let assetWriter else {
                 throw AssetWriterError.writerNotReady
             }
@@ -349,9 +449,12 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             tagBuffersWithHDRColorimetry = false
 
             logger.info(
-                "AssetWriter finished writing \(self.frameCount) frames to: \(url.lastPathComponent)"
+                "AssetWriter finished writing \(self.frameCount) frames to: \(workingURL.lastPathComponent)"
             )
             frameCount = 0
+            didReceiveVideoSample = false
+            didReceiveAudioSample = false
+            didReceiveMicrophoneSample = false
 
             // Clean up
             self.assetWriter = nil
@@ -359,24 +462,46 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             self.pixelBufferAdaptor = nil
             self.audioInput = nil
             self.microphoneInput = nil
+            self.workingOutputURL = nil
 
-            return url
+            return workingURL
         }
+
+        let resultURL: URL
+        switch postProcessingMode {
+        case .none:
+            resultURL = finalURL
+        case .mixedAudio:
+            try await exportMixedOutput(from: captureURL, to: finalURL)
+            try? FileManager.default.removeItem(at: captureURL)
+            resultURL = finalURL
+        case .separateAudio:
+            try await exportSeparateAudioOutputs(from: captureURL, primaryURL: finalURL, secondaryURL: secondaryURL)
+            try? FileManager.default.removeItem(at: captureURL)
+            resultURL = finalURL
+        }
+
+        self.outputURL = resultURL
+        return resultURL
     }
 
     /// Cancels the current writing session
     func cancel() {
         lock.withLockUnchecked {
             assetWriter?.cancelWriting()
+            audioRecorder?.stop()
             isWriting = false
             hasStartedSession = false
             lastVideoPresentationTime = .invalid
             activeHDRPreset = .sdr
             tagBuffersWithHDRColorimetry = false
             frameCount = 0
+            didReceiveVideoSample = false
+            didReceiveAudioSample = false
+            didReceiveMicrophoneSample = false
 
-            // Clean up temp file if it exists
-            if let url = outputURL {
+            for url in [outputURL, workingOutputURL, secondaryOutputURL] {
+                guard let url else { continue }
                 try? FileManager.default.removeItem(at: url)
             }
 
@@ -385,13 +510,272 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             pixelBufferAdaptor = nil
             audioInput = nil
             microphoneInput = nil
+            audioRecorder = nil
             outputURL = nil
+            workingOutputURL = nil
+            secondaryOutputURL = nil
+            postProcessingMode = .none
 
             logger.info("AssetWriter cancelled")
         }
     }
 
     // MARK: - Settings Helpers
+
+    private func determinePostProcessingMode(
+        captureVideo: Bool,
+        captureSystemAudio: Bool,
+        captureMicrophone: Bool,
+        separateAudioTracks: Bool
+    ) -> PostProcessingMode {
+        if !captureVideo {
+            if separateAudioTracks && captureSystemAudio && captureMicrophone {
+                return .separateAudio
+            }
+            if captureSystemAudio && captureMicrophone {
+                return .mixedAudio
+            }
+            return .mixedAudio
+        }
+
+        if !separateAudioTracks && captureSystemAudio && captureMicrophone {
+            return .mixedAudio
+        }
+
+        return .none
+    }
+
+    private func normalizedOutputURL(for url: URL, settings: SettingsStore) -> URL {
+        let baseURL = url.deletingPathExtension()
+        let outputURL = if !settings.recordVideo && settings.usesSeparateAudioTracks {
+            baseURL
+                .deletingLastPathComponent()
+                .appending(path: "\(baseURL.lastPathComponent)_system")
+        } else {
+            baseURL
+        }
+
+        return outputURL.appendingPathExtension(settings.recordingOutputFileExtension)
+    }
+
+    private func workingCaptureURL(for finalURL: URL, needsPostProcessing: Bool) -> URL {
+        guard needsPostProcessing else {
+            return finalURL
+        }
+
+        return finalURL
+            .deletingPathExtension()
+            .appendingPathExtension("capture.mov")
+    }
+
+    private func secondaryOutputURL(for finalURL: URL, settings: SettingsStore) -> URL? {
+        guard !settings.recordVideo, settings.usesSeparateAudioTracks else {
+            return nil
+        }
+
+        let baseURL = finalURL.deletingPathExtension()
+        let stem = baseURL.lastPathComponent.replacing("_system", with: "_microphone")
+        return baseURL.deletingLastPathComponent().appending(path: stem).appendingPathExtension(finalURL.pathExtension)
+    }
+
+    private func exportMixedOutput(from captureURL: URL, to finalURL: URL) async throws {
+        let asset = AVURLAsset(url: captureURL)
+
+        if captureVideo {
+            try await exportMixedMovie(from: asset, to: finalURL)
+        } else {
+            try await exportMixedAudioFile(from: asset, to: finalURL)
+        }
+    }
+
+    private func exportMixedMovie(from asset: AVURLAsset, to finalURL: URL) async throws {
+        let composition = AVMutableComposition()
+        let audioMix = AVMutableAudioMix()
+        var inputParameters: [AVMutableAudioMixInputParameters] = []
+
+        if let videoTrack = try await asset.loadTracks(withMediaType: .video).first,
+           let compositionVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+            let timeRange = CMTimeRange(start: .zero, duration: try await asset.load(.duration))
+            try compositionVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+            compositionVideoTrack.preferredTransform = try await videoTrack.load(.preferredTransform)
+        }
+
+        let assetAudioTracks = try await asset.loadTracks(withMediaType: .audio)
+        let duration = try await asset.load(.duration)
+        for audioTrack in assetAudioTracks {
+            guard let compositionAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                continue
+            }
+
+            try compositionAudioTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: duration),
+                of: audioTrack,
+                at: .zero
+            )
+
+            let parameters = AVMutableAudioMixInputParameters(track: compositionAudioTrack)
+            parameters.setVolume(1, at: .zero)
+            inputParameters.append(parameters)
+        }
+
+        audioMix.inputParameters = inputParameters
+
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+            throw AssetWriterError.writingFailed(nil)
+        }
+
+        exportSession.outputURL = finalURL
+        exportSession.outputFileType = finalURL.pathExtension == "mp4" ? .mp4 : .mov
+        exportSession.audioMix = audioMix
+        try await export(session: exportSession)
+    }
+
+    private func exportMixedAudioFile(from asset: AVURLAsset, to finalURL: URL) async throws {
+        let composition = AVMutableComposition()
+        let assetAudioTracks = try await asset.loadTracks(withMediaType: .audio)
+        let duration = try await asset.load(.duration)
+
+        var compositionAudioTracks: [AVCompositionTrack] = []
+        for audioTrack in assetAudioTracks {
+            guard let compositionAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                continue
+            }
+
+            try compositionAudioTrack.insertTimeRange(
+                CMTimeRange(start: .zero, duration: duration),
+                of: audioTrack,
+                at: .zero
+            )
+            compositionAudioTracks.append(compositionAudioTrack)
+        }
+
+        guard !compositionAudioTracks.isEmpty else {
+            throw AssetWriterError.noFramesWritten
+        }
+
+        let reader = try AVAssetReader(asset: composition)
+        let output = AVAssetReaderAudioMixOutput(
+            audioTracks: compositionAudioTracks,
+            audioSettings: linearPCMReaderSettings
+        )
+        guard reader.canAdd(output) else {
+            throw AssetWriterError.writingFailed(nil)
+        }
+        reader.add(output)
+
+        let writer = try AVAssetWriter(outputURL: finalURL, fileType: finalURL.pathExtension == "caf" ? .caf : .m4a)
+        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: createAudioSettings(for: finalURL.pathExtension == "caf" ? .pcm : .aac))
+        writerInput.expectsMediaDataInRealTime = false
+        guard writer.canAdd(writerInput) else {
+            throw AssetWriterError.writingFailed(nil)
+        }
+        writer.add(writerInput)
+
+        try await transcodeAudio(reader: reader, output: output, writer: writer, writerInput: writerInput)
+    }
+
+    private func exportSeparateAudioOutputs(from captureURL: URL, primaryURL: URL, secondaryURL: URL?) async throws {
+        let asset = AVURLAsset(url: captureURL)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+
+        guard !audioTracks.isEmpty else {
+            throw AssetWriterError.noFramesWritten
+        }
+
+        if let systemTrack = audioTracks.first {
+            try await exportAudioTrack(systemTrack, from: asset, to: primaryURL)
+        }
+
+        if let secondaryURL, audioTracks.count > 1 {
+            try await exportAudioTrack(audioTracks[1], from: asset, to: secondaryURL)
+        }
+    }
+
+    private func exportAudioTrack(_ track: AVAssetTrack, from asset: AVURLAsset, to url: URL) async throws {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: linearPCMReaderSettings)
+        guard reader.canAdd(output) else {
+            throw AssetWriterError.writingFailed(nil)
+        }
+        reader.add(output)
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: url.pathExtension == "caf" ? .caf : .m4a)
+        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: createAudioSettings(for: url.pathExtension == "caf" ? .pcm : .aac))
+        writerInput.expectsMediaDataInRealTime = false
+        guard writer.canAdd(writerInput) else {
+            throw AssetWriterError.writingFailed(nil)
+        }
+        writer.add(writerInput)
+
+        try await transcodeAudio(reader: reader, output: output, writer: writer, writerInput: writerInput)
+    }
+
+    private func transcodeAudio(
+        reader: AVAssetReader,
+        output: AVAssetReaderOutput,
+        writer: AVAssetWriter,
+        writerInput: AVAssetWriterInput
+    ) async throws {
+        guard writer.startWriting() else {
+            throw AssetWriterError.failedToStartWriting(writer.error)
+        }
+
+        guard reader.startReading() else {
+            throw AssetWriterError.writingFailed(reader.error)
+        }
+
+        writer.startSession(atSourceTime: .zero)
+
+        try await withCheckedThrowingContinuation { continuation in
+            let queue = DispatchQueue(label: "com.bettercapture.audioExport")
+            writerInput.requestMediaDataWhenReady(on: queue) {
+                while writerInput.isReadyForMoreMediaData {
+                    if let sampleBuffer = output.copyNextSampleBuffer() {
+                        if !writerInput.append(sampleBuffer) {
+                            reader.cancelReading()
+                            writer.cancelWriting()
+                            continuation.resume(throwing: AssetWriterError.writingFailed(writer.error))
+                            return
+                        }
+                    } else {
+                        writerInput.markAsFinished()
+                        writer.finishWriting {
+                            if writer.status == .failed {
+                                continuation.resume(throwing: AssetWriterError.writingFailed(writer.error))
+                            } else {
+                                continuation.resume()
+                            }
+                        }
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    private func export(session: AVAssetExportSession) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            session.exportAsynchronously {
+                if let error = session.error {
+                    continuation.resume(throwing: AssetWriterError.writingFailed(error))
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private var linearPCMReaderSettings: [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+    }
 
     private func createVideoSettings(from settings: SettingsStore, size: CGSize) -> [String: Any] {
         var videoSettings: [String: Any] = [
@@ -516,8 +900,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         )
     }
 
-    private func createAudioSettings(from settings: SettingsStore) -> [String: Any] {
-        switch settings.audioCodec {
+    private func createAudioSettings(for audioCodec: AudioCodec) -> [String: Any] {
+        switch audioCodec {
         case .aac:
             return [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -586,7 +970,7 @@ enum AssetWriterError: LocalizedError {
         case .noOutputURL:
             return "No output URL was configured."
         case .noFramesWritten:
-            return "No video frames were captured. Check screen recording permissions."
+            return "No media samples were captured. Check your recording permissions and source settings."
         }
     }
 }
