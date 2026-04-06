@@ -305,6 +305,7 @@ struct SettingsStoreTests {
 
     @Test func pcmAudioIncompatibleWithMP4SwitchesContainer() {
         let store = makeStore()
+        store.recordVideo = true
         store.containerFormat = .mp4
         store.audioCodec = .pcm
         // Setting PCM on MP4 should switch container to MOV
@@ -314,6 +315,7 @@ struct SettingsStoreTests {
 
     @Test func switchingToMP4WithPCMSwitchesAudioToAAC() {
         let store = makeStore()
+        store.recordVideo = true
         store.audioCodec = .pcm
         store.containerFormat = .mp4
         #expect(store.audioCodec == .aac)
@@ -322,6 +324,7 @@ struct SettingsStoreTests {
 
     @Test func aacWorksWithBothContainers() {
         let store = makeStore()
+        store.recordVideo = true
 
         store.containerFormat = .mov
         store.audioCodec = .aac
@@ -513,5 +516,18 @@ struct SettingsStoreTests {
 
         store.audioCodec = .pcm
         #expect(store.recordingOutputFileExtension == "caf")
+    }
+
+    @Test func audioOnlyPCMDoesNotChangeVideoContainerPreference() {
+        let store = makeStore()
+        store.recordVideo = false
+        store.recordAudio = true
+        store.containerFormat = .mp4
+
+        store.audioCodec = .pcm
+
+        #expect(store.audioCodec == .pcm)
+        #expect(store.containerFormat == .mp4)
+        #expect(store.supportedAudioCodecs == AudioCodec.allCases)
     }
 }

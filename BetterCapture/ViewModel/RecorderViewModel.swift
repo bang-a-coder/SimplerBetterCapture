@@ -100,6 +100,7 @@ final class RecorderViewModel {
     private let captureEngine: CaptureEngine
     private let assetWriter: AssetWriter
     private let cameraSession = CameraSession()
+    private let microphoneCaptureService = MicrophoneCaptureService()
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "RecorderViewModel")
 
@@ -298,7 +299,14 @@ final class RecorderViewModel {
                 try assetWriter.startWriting()
                 logger.info("AssetWriter ready")
             } else if settings.recordAudio && settings.captureMicrophone {
-                try assetWriter.startMicrophoneOnlyCapture(with: settings, url: outputURL)
+                try assetWriter.setup(
+                    url: outputURL,
+                    settings: settings,
+                    videoSize: .zero,
+                    captureVideo: false,
+                    separateAudioTracks: false
+                )
+                try assetWriter.startWriting()
                 logger.info("Microphone-only writer ready")
             }
 
@@ -317,6 +325,10 @@ final class RecorderViewModel {
                 )
             } else if settings.recordAudio && settings.captureMicrophone {
                 logger.info("Starting microphone-only recording...")
+                try await microphoneCaptureService.start(
+                    deviceID: settings.selectedMicrophoneID,
+                    sampleBufferDelegate: assetWriter
+                )
             }
 
             // Re-show the area selection border now that capture has started
@@ -332,6 +344,7 @@ final class RecorderViewModel {
         } catch {
             state = .idle
             lastError = error
+            microphoneCaptureService.stop()
             assetWriter.cancel()
             cameraSession.stop()
             selectionBorderFrame.dismiss()
@@ -353,6 +366,7 @@ final class RecorderViewModel {
             if settings.needsSharedContent {
                 try await captureEngine.stopCapture()
             }
+            microphoneCaptureService.stop()
             cameraSession.stop()
             isPresenterOverlayActive = false
 
@@ -375,6 +389,7 @@ final class RecorderViewModel {
         } catch {
             state = .idle
             lastError = error
+            microphoneCaptureService.stop()
             assetWriter.cancel()
             settings.stopAccessingOutputDirectory()
             notificationService.sendRecordingFailedNotification(error: error)

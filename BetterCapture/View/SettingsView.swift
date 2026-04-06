@@ -12,6 +12,7 @@ import SwiftUI
 /// The settings window for BetterCapture
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
+    let audioDeviceService: AudioDeviceService
     var updaterService: UpdaterService
 
     var body: some View {
@@ -25,7 +26,7 @@ struct SettingsView: View {
             }
 
             Tab("Audio", systemImage: "waveform") {
-                AudioSettingsView(settings: settings)
+                AudioSettingsView(settings: settings, audioDeviceService: audioDeviceService)
             }
 
             Tab("Shortcuts", systemImage: "keyboard") {
@@ -176,6 +177,7 @@ struct VideoSettingsView: View {
 
 struct AudioSettingsView: View {
     @Bindable var settings: SettingsStore
+    let audioDeviceService: AudioDeviceService
 
     var body: some View {
         Form {
@@ -188,16 +190,27 @@ struct AudioSettingsView: View {
                     Toggle("Capture Shared System Audio", isOn: $settings.captureSystemAudio)
                         .help("Records audio from the shared display/app scope provided by macOS")
                     Toggle("Capture Microphone", isOn: $settings.captureMicrophone)
-                        .help("Record audio from the default microphone input")
+                        .help("Record audio from the selected microphone input")
                     Toggle("Separate Audio Tracks", isOn: $settings.recordSeparateAudioTracks)
                         .disabled(!settings.captureSystemAudio || !settings.captureMicrophone)
                         .help("When enabled, keep system and microphone audio separate in the output")
                 }
 
+                if settings.captureMicrophone {
+                    Section("Microphone") {
+                        Picker("Input", selection: $settings.selectedMicrophoneID) {
+                            Text("System Default").tag(String?.none)
+                            ForEach(audioDeviceService.availableDevices) { device in
+                                Text(device.name).tag(String?.some(device.id))
+                            }
+                        }
+                    }
+                }
+
                 Section("Format") {
                     Picker("Codec", selection: $settings.audioCodec) {
                         ForEach(AudioCodec.allCases) { codec in
-                            let isSupported = settings.containerFormat.supportedAudioCodecs.contains(codec)
+                            let isSupported = settings.supportedAudioCodecs.contains(codec)
                             if isSupported {
                                 Text(codec.rawValue).tag(codec)
                             } else {
@@ -207,7 +220,7 @@ struct AudioSettingsView: View {
                             }
                         }
                     }
-                    .help("AAC is compressed, PCM is uncompressed lossless (MOV only)")
+                    .help(settings.recordVideo ? "AAC is compressed, PCM is uncompressed lossless (MOV only)" : "AAC is compressed, PCM is uncompressed lossless")
                 }
 
                 Section {
@@ -339,5 +352,5 @@ struct AboutSection: View {
 // MARK: - Preview
 
 #Preview {
-    SettingsView(settings: SettingsStore(), updaterService: UpdaterService())
+    SettingsView(settings: SettingsStore(), audioDeviceService: AudioDeviceService(), updaterService: UpdaterService())
 }

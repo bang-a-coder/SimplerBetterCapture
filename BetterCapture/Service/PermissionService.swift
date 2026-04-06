@@ -16,6 +16,7 @@ import AppKit
 @MainActor
 @Observable
 final class PermissionService {
+    private static let screenRecordingRequestKey = "hasRequestedScreenRecordingPermission"
 
     // MARK: - Permission States
 
@@ -40,6 +41,7 @@ final class PermissionService {
         subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture",
         category: "PermissionService"
     )
+    private let defaults = UserDefaults.standard
 
     // MARK: - Initialization
 
@@ -58,7 +60,11 @@ final class PermissionService {
     }
 
     private func checkScreenRecordingPermission() -> PermissionState {
-        CGPreflightScreenCaptureAccess() ? .granted : .denied
+        if CGPreflightScreenCaptureAccess() {
+            return .granted
+        }
+
+        return defaults.bool(forKey: Self.screenRecordingRequestKey) ? .denied : .unknown
     }
 
     private func checkMicrophonePermission() -> PermissionState {
@@ -101,6 +107,7 @@ final class PermissionService {
     /// Requests screen recording permission
     /// - Note: This will open System Settings if permission was previously denied
     func requestScreenRecordingPermission() {
+        defaults.set(true, forKey: Self.screenRecordingRequestKey)
         let wasGranted = CGRequestScreenCaptureAccess()
         screenRecordingState = wasGranted ? .granted : .denied
         logger.info("Screen recording permission request result: \(wasGranted)")

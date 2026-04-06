@@ -522,6 +522,11 @@ final class SettingsStore {
             AudioCodec(rawValue: audioCodecRaw) ?? .aac
         }
         set {
+            guard recordVideo else {
+                audioCodecRaw = newValue.rawValue
+                return
+            }
+
             // Ensure the audio codec is compatible with the current container format
             guard containerFormat.supportedAudioCodecs.contains(newValue) else {
                 // If codec is not compatible, switch to MOV container first
@@ -532,6 +537,10 @@ final class SettingsStore {
 
             audioCodecRaw = newValue.rawValue
         }
+    }
+
+    var supportedAudioCodecs: [AudioCodec] {
+        recordVideo ? containerFormat.supportedAudioCodecs : AudioCodec.allCases
     }
 
     var selectedMicrophoneID: String? {

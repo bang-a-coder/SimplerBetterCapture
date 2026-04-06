@@ -529,7 +529,7 @@ struct AudioSettingsSection: View {
                     name: "Audio Codec",
                     selection: $settings.audioCodec,
                     optionsWithState: AudioCodec.allCases.map { codec in
-                        let isSupported = settings.containerFormat.supportedAudioCodecs.contains(codec)
+                        let isSupported = settings.supportedAudioCodecs.contains(codec)
                         return PickerOption(
                             value: codec,
                             label: codec.rawValue,
