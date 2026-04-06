@@ -154,6 +154,9 @@ struct MenuBarView: View {
         }
         .frame(width: 320)
         .background(.ultraThinMaterial)
+        .onAppear {
+            viewModel.permissionService.updatePermissionStates()
+        }
     }
 }
 
@@ -390,6 +393,9 @@ struct PermissionStatusBanner: View {
     let showMicrophonePermission: Bool
 
     var body: some View {
+        let screenRecordingContent = permissionService.screenRecordingBannerContent()
+        let microphoneContent = permissionService.microphoneBannerContent()
+
         VStack(spacing: 4) {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -401,19 +407,19 @@ struct PermissionStatusBanner: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
 
-            if showScreenRecordingPermission && permissionService.screenRecordingState != .granted {
+            if showScreenRecordingPermission, let screenRecordingContent {
                 PermissionRow(
-                    title: "Screen Recording",
-                    isGranted: false
+                    content: screenRecordingContent,
+                    state: permissionService.screenRecordingState
                 ) {
                     permissionService.openScreenRecordingSettings()
                 }
             }
 
-            if showMicrophonePermission && permissionService.microphoneState != .granted {
+            if showMicrophonePermission, let microphoneContent {
                 PermissionRow(
-                    title: "Microphone",
-                    isGranted: false
+                    content: microphoneContent,
+                    state: permissionService.microphoneState
                 ) {
                     permissionService.openMicrophoneSettings()
                 }
@@ -454,29 +460,35 @@ struct AutomaticDisplayAudioRow: View {
 
 /// A single permission row with status and action button
 struct PermissionRow: View {
-    let title: String
-    let isGranted: Bool
+    let content: PermissionService.BannerRowContent
+    let state: PermissionService.PermissionState
     let action: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: isGranted ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundStyle(isGranted ? .green : .red)
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: state == .unknown ? "questionmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundStyle(state == .unknown ? .orange : .red)
                     .font(.system(size: 12))
+                    .padding(.top, 1)
 
-                Text(title)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(content.title)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.primary)
 
-                Spacer()
-
-                if !isGranted {
-                    Text("Open Settings")
+                    Text(content.message)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+
+                Spacer(minLength: 8)
+
+                Text(content.actionTitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 4)

@@ -26,6 +26,12 @@ final class PermissionService {
         case denied
     }
 
+    struct BannerRowContent: Equatable {
+        let title: String
+        let message: String
+        let actionTitle: String
+    }
+
     private(set) var screenRecordingState: PermissionState = .unknown
     private(set) var microphoneState: PermissionState = .unknown
 
@@ -77,6 +83,52 @@ final class PermissionService {
             return .denied
         @unknown default:
             return .unknown
+        }
+    }
+
+    func screenRecordingBannerContent() -> BannerRowContent? {
+        Self.screenRecordingBannerContent(for: screenRecordingState)
+    }
+
+    func microphoneBannerContent() -> BannerRowContent? {
+        Self.microphoneBannerContent(for: microphoneState)
+    }
+
+    static func screenRecordingBannerContent(for state: PermissionState) -> BannerRowContent? {
+        switch state {
+        case .granted:
+            return nil
+        case .unknown:
+            return BannerRowContent(
+                title: "Screen Recording",
+                message: "Allow BetterCapture to record your screen in System Settings.",
+                actionTitle: "Open Settings"
+            )
+        case .denied:
+            return BannerRowContent(
+                title: "Screen Recording",
+                message: "Screen recording is still unavailable. If you just enabled this in System Settings, quit and reopen BetterCapture.",
+                actionTitle: "Open Settings"
+            )
+        }
+    }
+
+    static func microphoneBannerContent(for state: PermissionState) -> BannerRowContent? {
+        switch state {
+        case .granted:
+            return nil
+        case .unknown:
+            return BannerRowContent(
+                title: "Microphone",
+                message: "Allow BetterCapture to access your microphone in System Settings.",
+                actionTitle: "Open Settings"
+            )
+        case .denied:
+            return BannerRowContent(
+                title: "Microphone",
+                message: "Microphone access is still unavailable. Review the setting in System Settings.",
+                actionTitle: "Open Settings"
+            )
         }
     }
 

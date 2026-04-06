@@ -250,6 +250,8 @@ final class RecorderViewModel {
 
     /// Starts a new recording session
     func startRecording() async {
+        permissionService.updatePermissionStates()
+
         guard canStartRecording else {
             logger.warning("Cannot start recording with the current mode and source settings")
             return

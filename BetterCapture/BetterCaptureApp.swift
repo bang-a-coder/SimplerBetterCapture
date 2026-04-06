@@ -10,6 +10,7 @@ import SwiftUI
 
 @main
 struct BetterCaptureApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = RecorderViewModel()
     @State private var updaterService = UpdaterService()
     var body: some Scene {
@@ -25,6 +26,11 @@ struct BetterCaptureApp: App {
             MenuBarLabel(viewModel: viewModel)
         }
         .menuBarExtraStyle(.window)
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                viewModel.permissionService.updatePermissionStates()
+            }
+        }
 
         // Settings window
         Settings {
