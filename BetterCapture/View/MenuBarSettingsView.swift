@@ -433,60 +433,63 @@ struct VideoSettingsSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SectionHeader(title: "Video")
+            SectionDivider()
+            SectionHeader(title: "Recording")
+            MenuBarToggle(name: "Record Video", isOn: $settings.recordVideo)
 
-            // Content Filter Section
-            MenuBarExpandableSection(title: "Content Filter") {
-                MenuBarToggle(name: "Show Cursor", isOn: $settings.showCursor)
-                MenuBarToggle(name: "Show Wallpaper", isOn: $settings.showWallpaper)
-                MenuBarToggle(name: "Show Menu Bar", isOn: $settings.showMenuBar)
-                MenuBarToggle(name: "Show Dock", isOn: $settings.showDock)
-                MenuBarToggle(name: "Show Window Shadows", isOn: $settings.showWindowShadows)
-                MenuBarToggle(name: "Show BetterCapture", isOn: $settings.showBetterCapture)
+            if settings.recordVideo {
+                SectionDivider()
+                SectionHeader(title: "Video")
+
+                MenuBarExpandableSection(title: "Content Filter") {
+                    MenuBarToggle(name: "Show Cursor", isOn: $settings.showCursor)
+                    MenuBarToggle(name: "Show Wallpaper", isOn: $settings.showWallpaper)
+                    MenuBarToggle(name: "Show Menu Bar", isOn: $settings.showMenuBar)
+                    MenuBarToggle(name: "Show Dock", isOn: $settings.showDock)
+                    MenuBarToggle(name: "Show Window Shadows", isOn: $settings.showWindowShadows)
+                    MenuBarToggle(name: "Show BetterCapture", isOn: $settings.showBetterCapture)
+                }
             }
 
-            // Frame Rate Picker
-            MenuBarExpandablePicker(
-                name: "Frame Rate",
-                selection: $settings.frameRate,
-                options: FrameRate.allCases.map { ($0, $0.displayName) }
-            )
+            if settings.recordVideo {
+                MenuBarExpandablePicker(
+                    name: "Frame Rate",
+                    selection: $settings.frameRate,
+                    options: FrameRate.allCases.map { ($0, $0.displayName) }
+                )
 
-            // Video Codec Picker (shows all codecs, disables incompatible ones)
-            MenuBarExpandablePicker(
-                name: "Codec",
-                selection: $settings.videoCodec,
-                optionsWithState: VideoCodec.allCases.map { codec in
-                    let isSupported = settings.containerFormat.supportedVideoCodecs.contains(codec)
-                    return PickerOption(
-                        value: codec,
-                        label: codec.rawValue,
-                        isDisabled: !isSupported,
-                        disabledMessage: isSupported ? nil : "Not supported for \(settings.containerFormat.rawValue.uppercased())"
-                    )
-                }
-            )
+                MenuBarExpandablePicker(
+                    name: "Codec",
+                    selection: $settings.videoCodec,
+                    optionsWithState: VideoCodec.allCases.map { codec in
+                        let isSupported = settings.containerFormat.supportedVideoCodecs.contains(codec)
+                        return PickerOption(
+                            value: codec,
+                            label: codec.rawValue,
+                            isDisabled: !isSupported,
+                            disabledMessage: isSupported ? nil : "Not supported for \(settings.containerFormat.rawValue.uppercased())"
+                        )
+                    }
+                )
 
-            // Container Format Picker
-            MenuBarExpandablePicker(
-                name: "Container",
-                selection: $settings.containerFormat,
-                options: ContainerFormat.allCases.map { ($0, $0.rawValue.uppercased()) }
-            )
+                MenuBarExpandablePicker(
+                    name: "Container",
+                    selection: $settings.containerFormat,
+                    options: ContainerFormat.allCases.map { ($0, $0.rawValue.uppercased()) }
+                )
 
-            // Alpha Channel Toggle (disabled if codec doesn't support or container doesn't support)
-            MenuBarToggle(
-                name: "Capture Alpha Channel",
-                isOn: $settings.captureAlphaChannel,
-                isDisabled: !settings.videoCodec.canToggleAlpha || !settings.containerFormat.supportsAlphaChannel
-            )
+                MenuBarToggle(
+                    name: "Capture Alpha Channel",
+                    isOn: $settings.captureAlphaChannel,
+                    isDisabled: !settings.videoCodec.canToggleAlpha || !settings.containerFormat.supportsAlphaChannel
+                )
 
-            // HDR Recording Toggle (disabled for codecs that don't support HDR)
-            MenuBarToggle(
-                name: "HDR Recording",
-                isOn: $settings.captureHDR,
-                isDisabled: !settings.videoCodec.supportsHDR
-            )
+                MenuBarToggle(
+                    name: "HDR Recording",
+                    isOn: $settings.captureHDR,
+                    isDisabled: !settings.videoCodec.supportsHDR
+                )
+            }
         }
     }
 }
@@ -500,39 +503,42 @@ struct AudioSettingsSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Separator before Audio section
             SectionDivider()
-
             SectionHeader(title: "Audio")
 
-            // System Audio Toggle
-            MenuBarToggle(name: "Capture System Audio", isOn: $settings.captureSystemAudio)
+            MenuBarToggle(name: "Record Audio", isOn: $settings.recordAudio)
 
-            // Microphone Toggle
-            MenuBarToggle(name: "Capture Microphone", isOn: $settings.captureMicrophone)
+            if settings.recordAudio {
+                MenuBarToggle(name: "Capture Shared System Audio", isOn: $settings.captureSystemAudio)
+                MenuBarToggle(name: "Capture Microphone", isOn: $settings.captureMicrophone)
 
-            // Microphone Source Picker (only shown when microphone is enabled)
-            if settings.captureMicrophone {
-                MicrophoneExpandablePicker(
-                    selectedID: $settings.selectedMicrophoneID,
-                    devices: audioDeviceService.availableDevices
-                )
-            }
-
-            // Audio Codec Picker (shows all codecs, disables incompatible ones)
-            MenuBarExpandablePicker(
-                name: "Audio Codec",
-                selection: $settings.audioCodec,
-                optionsWithState: AudioCodec.allCases.map { codec in
-                    let isSupported = settings.containerFormat.supportedAudioCodecs.contains(codec)
-                    return PickerOption(
-                        value: codec,
-                        label: codec.rawValue,
-                        isDisabled: !isSupported,
-                        disabledMessage: isSupported ? nil : "Not supported for \(settings.containerFormat.rawValue.uppercased())"
+                if settings.captureMicrophone {
+                    MicrophoneExpandablePicker(
+                        selectedID: $settings.selectedMicrophoneID,
+                        devices: audioDeviceService.availableDevices
                     )
                 }
-            )
+
+                MenuBarToggle(
+                    name: "Separate Audio Tracks",
+                    isOn: $settings.recordSeparateAudioTracks,
+                    isDisabled: !settings.captureSystemAudio || !settings.captureMicrophone
+                )
+
+                MenuBarExpandablePicker(
+                    name: "Audio Codec",
+                    selection: $settings.audioCodec,
+                    optionsWithState: AudioCodec.allCases.map { codec in
+                        let isSupported = settings.containerFormat.supportedAudioCodecs.contains(codec)
+                        return PickerOption(
+                            value: codec,
+                            label: codec.rawValue,
+                            isDisabled: !isSupported,
+                            disabledMessage: isSupported ? nil : "Not supported for \(settings.containerFormat.rawValue.uppercased())"
+                        )
+                    }
+                )
+            }
         }
     }
 }

@@ -79,6 +79,31 @@ struct SettingsStoreTests {
         #expect(store.showBetterCapture == false)
     }
 
+    @Test func defaultRecordVideoIsTrue() {
+        let store = makeStore()
+        #expect(store.recordVideo == true)
+    }
+
+    @Test func defaultRecordAudioIsTrue() {
+        let store = makeStore()
+        #expect(store.recordAudio == true)
+    }
+
+    @Test func defaultRecordSeparateAudioTracksIsFalse() {
+        let store = makeStore()
+        #expect(store.recordSeparateAudioTracks == false)
+    }
+
+    @Test func defaultRecordingOutputKindIsVideo() {
+        let store = makeStore()
+        #expect(store.recordingOutputKind == .video)
+    }
+
+    @Test func defaultRecordingOutputExtensionFollowsContainer() {
+        let store = makeStore()
+        #expect(store.recordingOutputFileExtension == "mov")
+    }
+
     // MARK: - Codec/Container Compatibility
 
     @Test func settingProResToMP4SwitchesContainerToMOV() {
@@ -428,5 +453,54 @@ struct SettingsStoreTests {
         #expect(store.videoCodec == .hevc)
         #expect(store.captureAlphaChannel == false)
         #expect(store.audioCodec == .aac)
+    }
+
+    // MARK: - Recording Mode Helpers
+
+    @Test func needsSharedContentForVideoOrSharedAudio() {
+        let store = makeStore()
+        #expect(store.needsSharedContent == true)
+
+        store.recordVideo = false
+        store.captureSystemAudio = false
+        #expect(store.needsSharedContent == false)
+
+        store.captureSystemAudio = true
+        #expect(store.needsSharedContent == true)
+    }
+
+    @Test func microphoneOnlyModeIsDetected() {
+        let store = makeStore()
+        store.recordVideo = false
+        store.captureSystemAudio = false
+        store.captureMicrophone = true
+        #expect(store.isMicrophoneOnlyMode == true)
+    }
+
+    @Test func separateAudioTracksRequireBothSources() {
+        let store = makeStore()
+        store.recordVideo = false
+        store.recordSeparateAudioTracks = true
+        store.captureSystemAudio = true
+        store.captureMicrophone = true
+
+        #expect(store.usesSeparateAudioTracks == true)
+        #expect(store.recordingOutputKind == .separateAudio)
+
+        store.captureMicrophone = false
+        #expect(store.usesSeparateAudioTracks == false)
+        #expect(store.recordingOutputKind == .mixedAudio)
+    }
+
+    @Test func audioOnlyModeUsesAudioExtension() {
+        let store = makeStore()
+        store.recordVideo = false
+        store.captureSystemAudio = false
+        store.recordAudio = true
+        #expect(store.recordingOutputKind == .mixedAudio)
+        #expect(store.recordingOutputFileExtension == "m4a")
+
+        store.audioCodec = .pcm
+        #expect(store.recordingOutputFileExtension == "caf")
     }
 }

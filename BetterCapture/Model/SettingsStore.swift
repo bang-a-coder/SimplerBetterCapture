@@ -408,6 +408,42 @@ final class SettingsStore {
 
     // MARK: - Audio Settings
 
+    var recordVideo: Bool {
+        get {
+            access(keyPath: \.recordVideo)
+            return defaults.object(forKey: "recordVideo") as? Bool ?? true
+        }
+        set {
+            withMutation(keyPath: \.recordVideo) {
+                defaults.set(newValue, forKey: "recordVideo")
+            }
+        }
+    }
+
+    var recordAudio: Bool {
+        get {
+            access(keyPath: \.recordAudio)
+            return defaults.object(forKey: "recordAudio") as? Bool ?? true
+        }
+        set {
+            withMutation(keyPath: \.recordAudio) {
+                defaults.set(newValue, forKey: "recordAudio")
+            }
+        }
+    }
+
+    var recordSeparateAudioTracks: Bool {
+        get {
+            access(keyPath: \.recordSeparateAudioTracks)
+            return defaults.bool(forKey: "recordSeparateAudioTracks")
+        }
+        set {
+            withMutation(keyPath: \.recordSeparateAudioTracks) {
+                defaults.set(newValue, forKey: "recordSeparateAudioTracks")
+            }
+        }
+    }
+
     var captureMicrophone: Bool {
         get {
             access(keyPath: \.captureMicrophone)
@@ -430,6 +466,55 @@ final class SettingsStore {
                 defaults.set(newValue, forKey: "captureSystemAudio")
             }
         }
+    }
+
+    var needsSharedContent: Bool {
+        recordVideo || (recordAudio && captureSystemAudio)
+    }
+
+    var isAudioOnlyMode: Bool {
+        recordAudio && !recordVideo
+    }
+
+    var isMicrophoneOnlyMode: Bool {
+        recordAudio && !captureSystemAudio && captureMicrophone && !recordVideo
+    }
+
+    var usesSeparateAudioTracks: Bool {
+        recordAudio
+            && recordSeparateAudioTracks
+            && captureSystemAudio
+            && captureMicrophone
+    }
+
+    enum RecordingOutputKind: Equatable {
+        case video
+        case mixedAudio
+        case separateAudio
+        case none
+    }
+
+    var recordingOutputKind: RecordingOutputKind {
+        guard recordVideo else {
+            if recordAudio {
+                return usesSeparateAudioTracks ? .separateAudio : .mixedAudio
+            }
+            return .none
+        }
+
+        return usesSeparateAudioTracks ? .separateAudio : .video
+    }
+
+    var recordingOutputFileExtension: String {
+        if recordVideo {
+            return containerFormat.fileExtension
+        }
+
+        guard recordAudio else {
+            return containerFormat.fileExtension
+        }
+
+        return audioCodec == .pcm ? "caf" : "m4a"
     }
 
     var audioCodec: AudioCodec {
