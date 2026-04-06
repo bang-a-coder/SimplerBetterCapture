@@ -16,7 +16,11 @@ import AppKit
 @MainActor
 @Observable
 final class PermissionService {
-    private static let screenRecordingRequestKey = "hasRequestedScreenRecordingPermission"
+    private let screenRecordingAccessChecker: () -> Bool
+    private let screenRecordingRequester: () -> Bool
+    private let microphoneAuthorizationStatusProvider: () -> AVAuthorizationStatus
+    private let microphoneAccessRequester: () async -> Bool
+    private var hasRequestedScreenRecordingPermissionThisSession = false
 
     // MARK: - Permission States
 
@@ -47,11 +51,23 @@ final class PermissionService {
         subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture",
         category: "PermissionService"
     )
-    private let defaults = UserDefaults.standard
 
     // MARK: - Initialization
 
-    init() {
+    init(
+        screenRecordingAccessChecker: @escaping () -> Bool = { CGPreflightScreenCaptureAccess() },
+        screenRecordingRequester: @escaping () -> Bool = { CGRequestScreenCaptureAccess() },
+        microphoneAuthorizationStatusProvider: @escaping () -> AVAuthorizationStatus = {
+            AVCaptureDevice.authorizationStatus(for: .audio)
+        },
+        microphoneAccessRequester: @escaping () async -> Bool = {
+            await AVCaptureDevice.requestAccess(for: .audio)
+        }
+    ) {
+        self.screenRecordingAccessChecker = screenRecordingAccessChecker
+        self.screenRecordingRequester = screenRecordingRequester
+        self.microphoneAuthorizationStatusProvider = microphoneAuthorizationStatusProvider
+        self.microphoneAccessRequester = microphoneAccessRequester
         updatePermissionStates()
     }
 
@@ -62,19 +78,23 @@ final class PermissionService {
         screenRecordingState = checkScreenRecordingPermission()
         microphoneState = checkMicrophonePermission()
 
+        if screenRecordingState == .granted {
+            hasRequestedScreenRecordingPermissionThisSession = false
+        }
+
         logger.info("Permission states - Screen: \(String(describing: self.screenRecordingState)), Microphone: \(String(describing: self.microphoneState))")
     }
 
     private func checkScreenRecordingPermission() -> PermissionState {
-        if CGPreflightScreenCaptureAccess() {
+        if screenRecordingAccessChecker() {
             return .granted
         }
 
-        return defaults.bool(forKey: Self.screenRecordingRequestKey) ? .denied : .unknown
+        return hasRequestedScreenRecordingPermissionThisSession ? .denied : .unknown
     }
 
     private func checkMicrophonePermission() -> PermissionState {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        switch microphoneAuthorizationStatusProvider() {
         case .authorized:
             return .granted
         case .notDetermined:
@@ -159,21 +179,21 @@ final class PermissionService {
     /// Requests screen recording permission
     /// - Note: This will open System Settings if permission was previously denied
     func requestScreenRecordingPermission() {
-        defaults.set(true, forKey: Self.screenRecordingRequestKey)
-        let wasGranted = CGRequestScreenCaptureAccess()
+        hasRequestedScreenRecordingPermissionThisSession = true
+        let wasGranted = screenRecordingRequester()
         screenRecordingState = wasGranted ? .granted : .denied
         logger.info("Screen recording permission request result: \(wasGranted)")
     }
 
     /// Requests microphone permission
     func requestMicrophonePermission() async {
-        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        let status = microphoneAuthorizationStatusProvider()
 
         switch status {
         case .authorized:
             microphoneState = .granted
         case .notDetermined:
-            let granted = await AVCaptureDevice.requestAccess(for: .audio)
+            let granted = await microphoneAccessRequester()
             microphoneState = granted ? .granted : .denied
             logger.info("Microphone permission request result: \(granted)")
         case .denied, .restricted:

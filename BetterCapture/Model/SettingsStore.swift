@@ -485,6 +485,7 @@ final class SettingsStore {
             && recordSeparateAudioTracks
             && captureSystemAudio
             && captureMicrophone
+            && !recordVideo
     }
 
     enum RecordingOutputKind: Equatable {

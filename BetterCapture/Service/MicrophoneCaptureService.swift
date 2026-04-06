@@ -9,75 +9,83 @@ import AVFoundation
 import OSLog
 
 /// Captures microphone audio without requiring ScreenCaptureKit content sharing.
-@MainActor
-final class MicrophoneCaptureService: NSObject {
+final class MicrophoneCaptureService: NSObject, @unchecked Sendable {
 
-    nonisolated(unsafe) private weak var sampleBufferDelegate: AssetWriter?
+    private weak var sampleBufferDelegate: AssetWriter?
 
     private var session: AVCaptureSession?
-    private let sessionQueue = DispatchQueue(label: "com.bettercapture.microphoneSession")
+    private let captureQueue = DispatchQueue(label: "com.bettercapture.microphoneCapture")
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture",
         category: "MicrophoneCaptureService"
     )
 
     func start(deviceID: String?, sampleBufferDelegate: AssetWriter) async throws {
-        guard session == nil else { return }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            captureQueue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: CaptureError.failedToCreateStream)
+                    return
+                }
 
-        let device: AVCaptureDevice? = if let deviceID {
-            AVCaptureDevice(uniqueID: deviceID)
-        } else {
-            AVCaptureDevice.default(for: .audio)
-        }
+                guard self.session == nil else {
+                    continuation.resume(returning: ())
+                    return
+                }
 
-        guard let device else {
-            throw CaptureError.failedToCreateStream
-        }
+                do {
+                    let device: AVCaptureDevice? = if let deviceID {
+                        AVCaptureDevice(uniqueID: deviceID)
+                    } else {
+                        AVCaptureDevice.default(for: .audio)
+                    }
 
-        let input = try AVCaptureDeviceInput(device: device)
-        let output = AVCaptureAudioDataOutput()
-        let newSession = AVCaptureSession()
+                    guard let device else {
+                        throw CaptureError.failedToCreateStream
+                    }
 
-        newSession.beginConfiguration()
+                    let input = try AVCaptureDeviceInput(device: device)
+                    let output = AVCaptureAudioDataOutput()
+                    let newSession = AVCaptureSession()
 
-        guard newSession.canAddInput(input) else {
-            throw CaptureError.failedToCreateStream
-        }
-        newSession.addInput(input)
+                    newSession.beginConfiguration()
 
-        guard newSession.canAddOutput(output) else {
-            throw CaptureError.failedToCreateStream
-        }
-        newSession.addOutput(output)
+                    guard newSession.canAddInput(input) else {
+                        throw CaptureError.failedToCreateStream
+                    }
+                    newSession.addInput(input)
 
-        newSession.commitConfiguration()
+                    guard newSession.canAddOutput(output) else {
+                        throw CaptureError.failedToCreateStream
+                    }
+                    newSession.addOutput(output)
 
-        self.sampleBufferDelegate = sampleBufferDelegate
-        output.setSampleBufferDelegate(self, queue: .main)
-        session = newSession
+                    newSession.commitConfiguration()
 
-        nonisolated(unsafe) let runnable = newSession
-        let isRunning = await withCheckedContinuation { continuation in
-            sessionQueue.async {
-                runnable.startRunning()
-                continuation.resume(returning: runnable.isRunning)
+                    self.sampleBufferDelegate = sampleBufferDelegate
+                    output.setSampleBufferDelegate(self, queue: self.captureQueue)
+                    self.session = newSession
+                    newSession.startRunning()
+
+                    self.logger.info("Microphone capture session started (running: \(newSession.isRunning))")
+                    continuation.resume(returning: ())
+                } catch {
+                    self.sampleBufferDelegate = nil
+                    self.session = nil
+                    continuation.resume(throwing: error)
+                }
             }
         }
-
-        logger.info("Microphone capture session started (running: \(isRunning))")
     }
 
     func stop() {
-        guard let current = session else { return }
-        session = nil
-        sampleBufferDelegate = nil
-
-        nonisolated(unsafe) let stoppable = current
-        sessionQueue.async {
-            stoppable.stopRunning()
+        captureQueue.async { [weak self] in
+            guard let self, let current = self.session else { return }
+            self.session = nil
+            self.sampleBufferDelegate = nil
+            current.stopRunning()
+            self.logger.info("Microphone capture session stopped")
         }
-
-        logger.info("Microphone capture session stopped")
     }
 }
 
@@ -87,8 +95,6 @@ extension MicrophoneCaptureService: AVCaptureAudioDataOutputSampleBufferDelegate
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        MainActor.assumeIsolated {
-            sampleBufferDelegate?.appendMicrophoneSample(sampleBuffer)
-        }
+        sampleBufferDelegate?.appendMicrophoneSample(sampleBuffer)
     }
 }

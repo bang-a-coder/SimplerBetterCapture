@@ -141,11 +141,6 @@ final class RecorderViewModel {
         )
     }
 
-    /// Refreshes the current permission states
-    func refreshPermissions() {
-        permissionService.updatePermissionStates()
-    }
-
     // MARK: - Public Methods
 
     /// Toggles the recording state. If no content is selected, triggers the appropriate
@@ -278,12 +273,12 @@ final class RecorderViewModel {
             }
 
             // Determine video size from filter
-            if settings.recordVideo, let captureFilter {
+            if let captureFilter {
                 videoSize = await getContentSize(from: captureFilter)
             } else {
                 videoSize = .zero
             }
-            logger.info("Video size: \(self.videoSize.width)x\(self.videoSize.height)")
+            logger.info("Capture size: \(self.videoSize.width)x\(self.videoSize.height)")
 
             // Access security-scoped output directory before writing
             _ = settings.startAccessingOutputDirectory()

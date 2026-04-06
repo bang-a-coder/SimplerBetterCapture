@@ -4,11 +4,37 @@
 //
 
 import Foundation
+import AVFoundation
 import Testing
 @testable import BetterCapture
 
 @MainActor
 struct PermissionServiceTests {
+
+    @Test func freshServiceReportsScreenRecordingUnknownWhenPreflightIsFalse() {
+        let service = PermissionService(
+            screenRecordingAccessChecker: { false },
+            screenRecordingRequester: { false },
+            microphoneAuthorizationStatusProvider: { .authorized },
+            microphoneAccessRequester: { false }
+        )
+
+        #expect(service.screenRecordingState == .unknown)
+    }
+
+    @Test func requestingScreenRecordingTurnsFalsePreflightIntoDenied() {
+        let service = PermissionService(
+            screenRecordingAccessChecker: { false },
+            screenRecordingRequester: { false },
+            microphoneAuthorizationStatusProvider: { .authorized },
+            microphoneAccessRequester: { false }
+        )
+
+        service.requestScreenRecordingPermission()
+        service.updatePermissionStates()
+
+        #expect(service.screenRecordingState == .denied)
+    }
 
     @Test func screenRecordingUnknownShowsSettingsPrompt() {
         let content = PermissionService.screenRecordingBannerContent(for: .unknown)

@@ -530,4 +530,33 @@ struct SettingsStoreTests {
         #expect(store.containerFormat == .mp4)
         #expect(store.supportedAudioCodecs == AudioCodec.allCases)
     }
+
+    @Test func audioOnlySeparateTracksUseDistinctOutputFiles() {
+        let store = makeStore()
+        store.recordVideo = false
+        store.recordAudio = true
+        store.captureSystemAudio = true
+        store.captureMicrophone = true
+        store.recordSeparateAudioTracks = true
+
+        let planned = AssetWriter.plannedOutputURLs(
+            for: URL(fileURLWithPath: "/tmp/recording.mov"),
+            settings: store
+        )
+
+        #expect(planned.primary.lastPathComponent == "recording_system.m4a")
+        #expect(planned.secondary?.lastPathComponent == "recording_microphone.m4a")
+    }
+
+    @Test func videoRecordingStaysOnTheDirectWriterPath() {
+        let store = makeStore()
+        store.recordVideo = true
+        store.recordAudio = true
+        store.captureSystemAudio = true
+        store.captureMicrophone = true
+        store.recordSeparateAudioTracks = true
+
+        #expect(store.usesSeparateAudioTracks == false)
+        #expect(store.recordingOutputKind == .video)
+    }
 }
