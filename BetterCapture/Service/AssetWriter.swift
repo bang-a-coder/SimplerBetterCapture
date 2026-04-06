@@ -535,7 +535,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             if captureSystemAudio && captureMicrophone {
                 return .mixedAudio
             }
-            return .mixedAudio
+            return .none
         }
 
         if !separateAudioTracks && captureSystemAudio && captureMicrophone {
@@ -624,10 +624,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             throw AssetWriterError.writingFailed(nil)
         }
 
-        exportSession.outputURL = finalURL
-        exportSession.outputFileType = finalURL.pathExtension == "mp4" ? .mp4 : .mov
         exportSession.audioMix = audioMix
-        try await export(session: exportSession)
+        try await exportSession.export(to: finalURL, as: finalURL.pathExtension == "mp4" ? .mp4 : .mov)
     }
 
     private func exportMixedAudioFile(from asset: AVURLAsset, to finalURL: URL) async throws {
@@ -726,42 +724,31 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
         writer.startSession(atSourceTime: .zero)
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let queue = DispatchQueue(label: "com.bettercapture.audioExport")
-            writerInput.requestMediaDataWhenReady(on: queue) {
-                while writerInput.isReadyForMoreMediaData {
-                    if let sampleBuffer = output.copyNextSampleBuffer() {
-                        if !writerInput.append(sampleBuffer) {
-                            reader.cancelReading()
-                            writer.cancelWriting()
-                            continuation.resume(throwing: AssetWriterError.writingFailed(writer.error))
-                            return
-                        }
-                    } else {
-                        writerInput.markAsFinished()
-                        writer.finishWriting {
-                            if writer.status == .failed {
-                                continuation.resume(throwing: AssetWriterError.writingFailed(writer.error))
-                            } else {
-                                continuation.resume()
-                            }
-                        }
-                        return
+        while reader.status == .reading {
+            if writerInput.isReadyForMoreMediaData {
+                if let sampleBuffer = output.copyNextSampleBuffer() {
+                    if !writerInput.append(sampleBuffer) {
+                        reader.cancelReading()
+                        writer.cancelWriting()
+                        throw AssetWriterError.writingFailed(writer.error)
                     }
+                } else {
+                    break
                 }
+            } else {
+                try await Task.sleep(for: .milliseconds(10))
             }
         }
-    }
 
-    private func export(session: AVAssetExportSession) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            session.exportAsynchronously {
-                if let error = session.error {
-                    continuation.resume(throwing: AssetWriterError.writingFailed(error))
-                } else {
-                    continuation.resume()
-                }
-            }
+        if reader.status == .failed {
+            throw AssetWriterError.writingFailed(reader.error)
+        }
+
+        writerInput.markAsFinished()
+        await writer.finishWriting()
+
+        if writer.status == .failed {
+            throw AssetWriterError.writingFailed(writer.error)
         }
     }
 
