@@ -16,8 +16,6 @@ final class MicrophoneCaptureService: NSObject {
 
     private var session: AVCaptureSession?
     private let sessionQueue = DispatchQueue(label: "com.bettercapture.microphoneSession")
-    private let outputQueue = DispatchQueue(label: "com.bettercapture.microphoneOutput")
-
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture",
         category: "MicrophoneCaptureService"
@@ -33,7 +31,7 @@ final class MicrophoneCaptureService: NSObject {
         }
 
         guard let device else {
-            throw CaptureError.noCaptureSourceSelected
+            throw CaptureError.failedToCreateStream
         }
 
         let input = try AVCaptureDeviceInput(device: device)
@@ -55,7 +53,7 @@ final class MicrophoneCaptureService: NSObject {
         newSession.commitConfiguration()
 
         self.sampleBufferDelegate = sampleBufferDelegate
-        output.setSampleBufferDelegate(self, queue: outputQueue)
+        output.setSampleBufferDelegate(self, queue: .main)
         session = newSession
 
         nonisolated(unsafe) let runnable = newSession
@@ -89,6 +87,8 @@ extension MicrophoneCaptureService: AVCaptureAudioDataOutputSampleBufferDelegate
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        sampleBufferDelegate?.appendMicrophoneSample(sampleBuffer)
+        MainActor.assumeIsolated {
+            sampleBufferDelegate?.appendMicrophoneSample(sampleBuffer)
+        }
     }
 }
