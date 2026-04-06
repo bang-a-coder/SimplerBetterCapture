@@ -29,8 +29,10 @@ struct RecorderViewModelTests {
         #expect(viewModel.isRecording == false)
     }
 
-    @Test func cannotStartRecordingWithoutContentFilter() {
+    @Test func cannotStartVideoRecordingWithoutContentFilter() {
         let viewModel = RecorderViewModel()
+        viewModel.settings.recordVideo = true
+        viewModel.settings.recordAudio = false
         #expect(viewModel.canStartRecording == false)
     }
 
