@@ -29,7 +29,6 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var audioInput: AVAssetWriterInput?
     private var microphoneInput: AVAssetWriterInput?
-    private var audioRecorder: AVAudioRecorder?
 
     private(set) var isWriting = false
     private(set) var outputURL: URL?
@@ -201,30 +200,6 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         logger.info("AssetWriter started writing")
     }
 
-    func startMicrophoneOnlyCapture(with settings: SettingsStore, url: URL) throws {
-        let finalURL = normalizedOutputURL(for: url, settings: settings)
-        let directory = finalURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        if FileManager.default.fileExists(atPath: finalURL.path()) {
-            try FileManager.default.removeItem(at: finalURL)
-        }
-
-        let recorder = try AVAudioRecorder(url: finalURL, settings: createAudioSettings(for: settings.audioCodec))
-        recorder.prepareToRecord()
-
-        guard recorder.record() else {
-            throw AssetWriterError.failedToStartWriting(nil)
-        }
-
-        audioRecorder = recorder
-        outputURL = finalURL
-        workingOutputURL = finalURL
-        secondaryOutputURL = nil
-        isWriting = true
-        logger.info("Microphone-only capture started: \(finalURL.lastPathComponent)")
-    }
-
     // Track frame counts for debugging
     private var frameCount = 0
 
@@ -376,13 +351,6 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
     /// Finishes writing and finalizes the output file
     func finishWriting() async throws -> URL {
-        if let audioRecorder, let outputURL {
-            audioRecorder.stop()
-            self.audioRecorder = nil
-            isWriting = false
-            return outputURL
-        }
-
         // First critical section: validate state and mark inputs as finished
         let (writerToFinish, finalURL, workingURL, secondaryURL, postProcessingMode): (
             AVAssetWriter, URL, URL, URL?, PostProcessingMode
@@ -489,7 +457,6 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     func cancel() {
         lock.withLockUnchecked {
             assetWriter?.cancelWriting()
-            audioRecorder?.stop()
             isWriting = false
             hasStartedSession = false
             lastVideoPresentationTime = .invalid
@@ -510,7 +477,6 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             pixelBufferAdaptor = nil
             audioInput = nil
             microphoneInput = nil
-            audioRecorder = nil
             outputURL = nil
             workingOutputURL = nil
             secondaryOutputURL = nil
