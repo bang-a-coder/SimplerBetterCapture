@@ -52,6 +52,26 @@ struct RecorderViewModelTests {
         #expect(viewModel.canStartRecording == true)
     }
 
+    @Test func microphoneOnlyModeDoesNotShowCaptureContextSection() {
+        let viewModel = RecorderViewModel()
+        viewModel.settings.recordVideo = false
+        viewModel.settings.recordAudio = true
+        viewModel.settings.captureSystemAudio = false
+        viewModel.settings.captureMicrophone = true
+
+        #expect(viewModel.showsCaptureContextSection == false)
+    }
+
+    @Test func audioStatusItemsShowBeforeRecording() {
+        let viewModel = RecorderViewModel()
+        viewModel.settings.recordVideo = false
+        viewModel.settings.recordAudio = true
+        viewModel.settings.captureSystemAudio = true
+        viewModel.settings.captureMicrophone = true
+
+        #expect(viewModel.audioStatusItems.map(\.source) == [.system, .microphone])
+    }
+
     @Test func hasNoContentSelectedByDefault() {
         let viewModel = RecorderViewModel()
         #expect(viewModel.hasContentSelected == false)

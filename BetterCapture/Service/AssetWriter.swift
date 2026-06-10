@@ -13,16 +13,39 @@ import ScreenCaptureKit
 import VideoToolbox
 import os
 
+typealias RecordingAudioActivityHandler = @Sendable (RecordingAudioSource, Float) -> Void
+
 /// Service responsible for writing captured media to disk using AVAssetWriter
-final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable {
+nonisolated final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable {
 
     private enum PostProcessingMode {
         case none
         case mixedAudio
     }
 
+    private struct AudioActivity {
+        let source: RecordingAudioSource
+        let level: Float
+        let handler: RecordingAudioActivityHandler
+    }
+
     // MARK: - Properties
 
+    var audioActivityHandler: RecordingAudioActivityHandler? {
+        get {
+            audioActivityHandlerLock.withLockUnchecked {
+                _audioActivityHandler
+            }
+        }
+        set {
+            audioActivityHandlerLock.withLockUnchecked {
+                _audioActivityHandler = newValue
+            }
+        }
+    }
+    private(set) var lastAudioWriteSummary = RecordingAudioWriteSummary()
+
+    private var _audioActivityHandler: RecordingAudioActivityHandler?
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
@@ -51,6 +74,10 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     private var didReceiveVideoSample = false
     private var didReceiveAudioSample = false
     private var didReceiveMicrophoneSample = false
+    private var maxAudioLevel: Float = 0
+    private var maxMicrophoneLevel: Float = 0
+    private var lastAudioActivityCallbackDates: [RecordingAudioSource: Date] = [:]
+    private let audioActivityCallbackInterval: TimeInterval = 0.12
     private var captureVideo = true
     private var captureSystemAudio = false
     private var captureMicrophone = false
@@ -67,6 +94,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
     // Lock for thread-safe access to writer state
     private let lock = OSAllocatedUnfairLock()
+    private let audioActivityHandlerLock = OSAllocatedUnfairLock()
 
     // MARK: - Setup
 
@@ -75,6 +103,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     ///   - url: The output file URL
     ///   - settings: The settings store containing encoding configuration
     ///   - videoSize: The dimensions of the video
+    @MainActor
     func setup(
         url: URL,
         settings: SettingsStore,
@@ -210,6 +239,10 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         didReceiveVideoSample = false
         didReceiveAudioSample = false
         didReceiveMicrophoneSample = false
+        maxAudioLevel = 0
+        maxMicrophoneLevel = 0
+        lastAudioActivityCallbackDates = [:]
+        lastAudioWriteSummary = RecordingAudioWriteSummary()
 
         logger.info("AssetWriter configured for output: \(captureURL.lastPathComponent)")
     }
@@ -337,16 +370,17 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
     /// Appends a system audio sample buffer - called synchronously from capture queue
     func appendAudioSample(_ sampleBuffer: CMSampleBuffer) {
-        lock.withLockUnchecked {
+        let activity: AudioActivity? = lock.withLockUnchecked {
             guard let assetWriter,
                 assetWriter.status == .writing,
                 let audioInput,
                 audioInput.isReadyForMoreMediaData
             else {
-                return
+                return nil
             }
 
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let level = AudioLevelMeter.level(for: sampleBuffer)
 
             // Start session on first sample if video hasn't started it yet
             if !hasStartedSession {
@@ -358,15 +392,24 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
             if !audioInput.append(sampleBuffer) {
                 logger.error("Failed to append audio sample buffer")
+                return nil
             } else {
                 didReceiveAudioSample = true
+                maxAudioLevel = max(maxAudioLevel, level)
+                return audioActivity(source: .system, level: level)
             }
+        }
+
+        if let activity {
+            activity.handler(activity.source, activity.level)
         }
     }
 
     /// Appends a microphone audio sample buffer
     func appendMicrophoneSample(_ sampleBuffer: CMSampleBuffer) {
-        lock.withLockUnchecked {
+        let activity: AudioActivity? = lock.withLockUnchecked {
+            let level = AudioLevelMeter.level(for: sampleBuffer)
+
             if let secondaryAudioWriter,
                 secondaryAudioWriter.status == .writing,
                 let secondaryAudioInput,
@@ -389,11 +432,12 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
                 if !secondaryAudioInput.append(sampleBuffer) {
                     logger.error("Failed to append microphone sample buffer")
+                    return nil
                 } else {
                     didReceiveMicrophoneSample = true
+                    maxMicrophoneLevel = max(maxMicrophoneLevel, level)
+                    return audioActivity(source: .microphone, level: level)
                 }
-
-                return
             }
 
             guard let assetWriter,
@@ -401,7 +445,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
                 let microphoneInput,
                 microphoneInput.isReadyForMoreMediaData
             else {
-                return
+                return nil
             }
 
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -415,10 +459,34 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
             if !microphoneInput.append(sampleBuffer) {
                 logger.error("Failed to append microphone sample buffer")
+                return nil
             } else {
                 didReceiveMicrophoneSample = true
+                maxMicrophoneLevel = max(maxMicrophoneLevel, level)
+                return audioActivity(source: .microphone, level: level)
             }
         }
+
+        if let activity {
+            activity.handler(activity.source, activity.level)
+        }
+    }
+
+    private func audioActivity(source: RecordingAudioSource, level: Float) -> AudioActivity? {
+        let now = Date()
+
+        if let lastCallbackDate = lastAudioActivityCallbackDates[source],
+           now.timeIntervalSince(lastCallbackDate) < audioActivityCallbackInterval {
+            return nil
+        }
+
+        lastAudioActivityCallbackDates[source] = now
+
+        guard let audioActivityHandler else {
+            return nil
+        }
+
+        return AudioActivity(source: source, level: level, handler: audioActivityHandler)
     }
 
     // MARK: - Finalization
@@ -434,6 +502,9 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             secondaryURL,
             postProcessingMode,
             secondarySessionStarted,
+            didWriteSystemAudio,
+            maxSystemAudioLevel,
+            maxMicrophoneAudioLevel,
             didWriteMicrophoneSample
         ): (
             AVAssetWriter,
@@ -443,6 +514,9 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             URL?,
             PostProcessingMode,
             Bool,
+            Bool,
+            Float,
+            Float,
             Bool
         )
 
@@ -455,6 +529,9 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
                 secondaryURL,
                 postProcessingMode,
                 secondarySessionStarted,
+                didWriteSystemAudio,
+                maxSystemAudioLevel,
+                maxMicrophoneAudioLevel,
                 didWriteMicrophoneSample
             ) = try lock.withLockUnchecked {
                 guard let assetWriter, isWriting else {
@@ -494,6 +571,9 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
                     self.secondaryOutputURL,
                     self.postProcessingMode,
                     self.secondaryHasStartedSession,
+                    self.didReceiveAudioSample,
+                    self.maxAudioLevel,
+                    self.maxMicrophoneLevel,
                     self.didReceiveMicrophoneSample
                 )
             }
@@ -541,6 +621,15 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             didReceiveVideoSample = false
             didReceiveAudioSample = false
             didReceiveMicrophoneSample = false
+            maxAudioLevel = 0
+            maxMicrophoneLevel = 0
+            lastAudioActivityCallbackDates = [:]
+            lastAudioWriteSummary = RecordingAudioWriteSummary(
+                didWriteSystemAudio: didWriteSystemAudio,
+                didWriteMicrophoneAudio: didWriteMicrophoneSample,
+                maxSystemAudioLevel: maxSystemAudioLevel,
+                maxMicrophoneAudioLevel: maxMicrophoneAudioLevel
+            )
 
             // Clean up
             self.assetWriter = nil
@@ -555,7 +644,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             return workingURL
         }
 
-        let resultURL: URL
+        var resultURL: URL
         switch postProcessingMode {
         case .none:
             resultURL = finalURL
@@ -565,8 +654,17 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             resultURL = finalURL
         }
 
-        if let secondaryURL, !didWriteMicrophoneSample {
-            try? FileManager.default.removeItem(at: secondaryURL)
+        if let secondaryURL {
+            if !didWriteSystemAudio {
+                try? FileManager.default.removeItem(at: finalURL)
+                if didWriteMicrophoneSample {
+                    resultURL = secondaryURL
+                }
+            }
+
+            if !didWriteMicrophoneSample {
+                try? FileManager.default.removeItem(at: secondaryURL)
+            }
         }
 
         self.outputURL = resultURL
@@ -587,6 +685,10 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             didReceiveVideoSample = false
             didReceiveAudioSample = false
             didReceiveMicrophoneSample = false
+            maxAudioLevel = 0
+            maxMicrophoneLevel = 0
+            lastAudioActivityCallbackDates = [:]
+            lastAudioWriteSummary = RecordingAudioWriteSummary()
 
             for url in [outputURL, workingOutputURL, secondaryOutputURL] {
                 guard let url else { continue }
@@ -625,6 +727,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         return .none
     }
 
+    @MainActor
     static func plannedOutputURLs(for url: URL, settings: SettingsStore) -> (primary: URL, secondary: URL?) {
         let baseURL = url.deletingPathExtension()
         let primaryBaseURL = if !settings.recordVideo && settings.usesSeparateAudioTracks {
@@ -808,6 +911,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         ]
     }
 
+    @MainActor
     private func createVideoSettings(from settings: SettingsStore, size: CGSize) -> [String: Any] {
         var videoSettings: [String: Any] = [
             AVVideoWidthKey: Int(size.width),

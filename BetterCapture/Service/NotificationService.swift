@@ -99,10 +99,14 @@ final class NotificationService: NSObject {
 
     /// Sends a notification for a successfully saved recording
     /// - Parameter fileURL: The URL of the saved recording file
-    func sendRecordingSavedNotification(fileURL: URL) {
+    func sendRecordingSavedNotification(fileURL: URL, warnings: [String] = []) {
         let content = UNMutableNotificationContent()
         content.title = "Recording Saved"
-        content.body = "Your recording has been saved to \(fileURL.lastPathComponent)"
+        if warnings.isEmpty {
+            content.body = "Your recording has been saved to \(fileURL.lastPathComponent)"
+        } else {
+            content.body = "Saved to \(fileURL.lastPathComponent). \(warnings.joined(separator: " "))"
+        }
         content.sound = .default
         content.categoryIdentifier = NotificationIdentifier.categoryRecordingSaved
 

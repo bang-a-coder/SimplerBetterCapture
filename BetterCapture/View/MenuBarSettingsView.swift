@@ -52,6 +52,7 @@ struct MenuBarToggle: View {
     let name: String
     @Binding var isOn: Bool
     var isDisabled: Bool = false
+    var audioStatusItem: RecordingAudioStatusItem?
     @State private var isHovered = false
 
     var body: some View {
@@ -59,7 +60,13 @@ struct MenuBarToggle: View {
             Text(name)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(isDisabled ? .secondary : .primary)
+
+            if let audioStatusItem {
+                AudioSignalBars(item: audioStatusItem)
+            }
+
             Spacer()
+
             Toggle("", isOn: $isOn)
                 .toggleStyle(.switch)
                 .tint(.blue)
@@ -291,6 +298,7 @@ struct DeviceRow: View {
 struct MicrophoneExpandablePicker: View {
     @Binding var selectedID: String?
     let devices: [AudioInputDevice]
+    let defaultDeviceName: String?
     @State private var isExpanded = false
     @State private var isHovered = false
 
@@ -334,7 +342,11 @@ struct MicrophoneExpandablePicker: View {
                 VStack(spacing: 0) {
                     // System Default option
                     DeviceRow(
-                        name: "System Default",
+                        name: AudioDeviceService.microphoneDisplayName(
+                            selectedID: nil,
+                            devices: devices,
+                            defaultMicrophoneName: defaultDeviceName
+                        ),
                         icon: "mic",
                         isSelected: selectedID == nil
                     ) {
@@ -365,10 +377,11 @@ struct MicrophoneExpandablePicker: View {
     }
 
     private var currentLabel: String {
-        if let id = selectedID, let device = devices.first(where: { $0.id == id }) {
-            return device.name
-        }
-        return "System Default"
+        AudioDeviceService.microphoneDisplayName(
+            selectedID: selectedID,
+            devices: devices,
+            defaultMicrophoneName: defaultDeviceName
+        )
     }
 }
 
@@ -500,6 +513,7 @@ struct VideoSettingsSection: View {
 struct AudioSettingsSection: View {
     @Bindable var settings: SettingsStore
     let audioDeviceService: AudioDeviceService
+    var audioStatusItems: [RecordingAudioStatusItem] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -509,13 +523,23 @@ struct AudioSettingsSection: View {
             MenuBarToggle(name: "Record Audio", isOn: $settings.recordAudio)
 
             if settings.recordAudio {
-                MenuBarToggle(name: "Capture Shared System Audio", isOn: $settings.captureSystemAudio)
-                MenuBarToggle(name: "Capture Microphone", isOn: $settings.captureMicrophone)
+                MenuBarToggle(
+                    name: "Capture Shared System Audio",
+                    isOn: $settings.captureSystemAudio,
+                    audioStatusItem: settings.captureSystemAudio ? audioStatusItem(for: .system) : nil
+                )
+
+                MenuBarToggle(
+                    name: "Capture Microphone",
+                    isOn: $settings.captureMicrophone,
+                    audioStatusItem: settings.captureMicrophone ? audioStatusItem(for: .microphone) : nil
+                )
 
                 if settings.captureMicrophone {
                     MicrophoneExpandablePicker(
                         selectedID: $settings.selectedMicrophoneID,
-                        devices: audioDeviceService.availableDevices
+                        devices: audioDeviceService.availableDevices,
+                        defaultDeviceName: audioDeviceService.defaultMicrophoneName
                     )
                 }
 
@@ -539,6 +563,79 @@ struct AudioSettingsSection: View {
                     }
                 )
             }
+        }
+    }
+
+    private func audioStatusItem(for source: RecordingAudioSource) -> RecordingAudioStatusItem? {
+        audioStatusItems.first { $0.source == source }
+    }
+}
+
+private struct AudioSignalBars: View {
+    let item: RecordingAudioStatusItem
+    private let barMultipliers: [CGFloat] = [0.45, 0.85, 1.2, 0.65]
+    private let maximumBarHeight: CGFloat = 10
+
+    private var tint: Color {
+        switch item.state {
+        case .waiting:
+            .secondary
+        case .silent:
+            .orange
+        case .live:
+            .green
+        }
+    }
+
+    private var value: CGFloat {
+        guard item.state == .live else {
+            return 0
+        }
+
+        let level = Double(min(max(item.level, 0.000_001), 1))
+        let decibels = 20 * log10(level)
+        return CGFloat(min(max((decibels + 60) / 60, 0.12), 1))
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(0..<barMultipliers.count, id: \.self) { index in
+                Capsule()
+                    .fill(tint)
+                    .frame(width: 2, height: barHeight(for: barMultipliers[index]))
+                    .opacity(item.state == .live ? 0.9 : 0.45)
+            }
+        }
+        .frame(height: maximumBarHeight, alignment: .bottom)
+        .padding(.leading, 3)
+        .animation(.easeOut(duration: 0.12), value: value)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func barHeight(for multiplier: CGFloat) -> CGFloat {
+        guard item.state == .live else {
+            return 2
+        }
+
+        return max(2, min(maximumBarHeight, maximumBarHeight * value * multiplier))
+    }
+
+    private var accessibilityLabel: String {
+        let source: String
+        switch item.source {
+        case .system:
+            source = "System audio"
+        case .microphone:
+            source = "Microphone"
+        }
+
+        switch item.state {
+        case .waiting:
+            return "\(source) signal is being checked"
+        case .silent:
+            return "\(source) signal is silent"
+        case .live:
+            return "\(source) signal is live"
         }
     }
 }

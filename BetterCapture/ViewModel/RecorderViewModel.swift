@@ -29,6 +29,8 @@ final class RecorderViewModel {
     private(set) var recordingDuration: TimeInterval = 0
     private(set) var lastError: Error?
     private(set) var selectedContentFilter: SCContentFilter?
+    private(set) var audioHealth = RecordingAudioHealth()
+    private(set) var lastRecordingAudioWarnings: [String] = []
 
     /// The source rectangle for area selection (in display points, top-left origin)
     private(set) var selectedSourceRect: CGRect?
@@ -74,6 +76,51 @@ final class RecorderViewModel {
         settings.isAudioOnlyMode && settings.captureSystemAudio
     }
 
+    var showsCaptureContextSection: Bool {
+        requiresManualContentSelection
+            || usesAutomaticSharedAudioDisplay
+            || (settings.recordVideo && hasContentSelected)
+    }
+
+    var audioStatusItems: [RecordingAudioStatusItem] {
+        guard settings.recordAudio else {
+            return []
+        }
+
+        let now = Date()
+        var items: [RecordingAudioStatusItem] = []
+
+        if settings.captureSystemAudio {
+            let meter = audioHealth.meter(for: .system)
+            let state = audioHealth.state(for: .system, at: now)
+            items.append(
+                RecordingAudioStatusItem(
+                    source: .system,
+                    title: "System",
+                    detail: nil,
+                    state: state,
+                    level: state == .live ? meter.level : 0
+                )
+            )
+        }
+
+        if settings.captureMicrophone {
+            let meter = audioHealth.meter(for: .microphone)
+            let state = audioHealth.state(for: .microphone, at: now)
+            items.append(
+                RecordingAudioStatusItem(
+                    source: .microphone,
+                    title: "Mic",
+                    detail: recordingMicrophoneDisplayName,
+                    state: state,
+                    level: state == .live ? meter.level : 0
+                )
+            )
+        }
+
+        return items
+    }
+
     var formattedDuration: String {
         let hours = Int(recordingDuration) / 3600
         let minutes = (Int(recordingDuration) % 3600) / 60
@@ -101,6 +148,7 @@ final class RecorderViewModel {
     private let assetWriter: AssetWriter
     private let cameraSession = CameraSession()
     private let microphoneCaptureService = MicrophoneCaptureService()
+    private let audioLevelMonitorService = AudioLevelMonitorService()
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "RecorderViewModel")
 
@@ -109,6 +157,7 @@ final class RecorderViewModel {
     private var recordingTimer: Timer?
     private var recordingStartTime: Date?
     private var videoSize: CGSize = .zero
+    private var recordingMicrophoneDisplayName = "System Default"
     private let areaSelectionOverlay = AreaSelectionOverlay()
     private let selectionBorderFrame = SelectionBorderFrame()
     private let recordingOverlay = RecordingOverlayCoordinator()
@@ -139,6 +188,60 @@ final class RecorderViewModel {
             includeScreenRecording: settings.needsSharedContent,
             includeMicrophone: settings.recordAudio && settings.captureMicrophone
         )
+    }
+
+    func refreshMenuState() {
+        permissionService.updatePermissionStates()
+        audioDeviceService.refreshDevices()
+        audioDeviceService.clearUnavailableSelection(in: settings)
+    }
+
+    func startAudioMonitoringIfNeeded() async {
+        refreshMenuState()
+
+        guard !isRecording, settings.recordAudio, settings.captureSystemAudio || settings.captureMicrophone else {
+            await stopAudioMonitoring()
+            return
+        }
+
+        await stopAudioMonitoring()
+        audioHealth.reset()
+        recordingMicrophoneDisplayName = audioDeviceService.microphoneDisplayName(for: settings.selectedMicrophoneID)
+        audioLevelMonitorService.audioActivityHandler = { [weak self] source, level in
+            Task { @MainActor [weak self] in
+                self?.recordAudioSample(source: source, level: level)
+            }
+        }
+
+        do {
+            if let captureFilter = try await idleAudioMonitoringFilter() {
+                let contentSize = await getContentSize(from: captureFilter)
+                try await audioLevelMonitorService.startSharedMonitoring(
+                    filter: captureFilter,
+                    contentSize: contentSize,
+                    sourceRect: selectedSourceRect,
+                    captureSystemAudio: settings.captureSystemAudio,
+                    captureMicrophone: settings.captureMicrophone,
+                    microphoneDeviceID: audioDeviceService.resolvedMicrophoneID(for: settings.selectedMicrophoneID)
+                )
+            } else if settings.captureMicrophone {
+                try await audioLevelMonitorService.startMicrophoneMonitoring(
+                    deviceID: audioDeviceService.resolvedMicrophoneID(for: settings.selectedMicrophoneID)
+                )
+            }
+        } catch {
+            logger.warning("Audio monitoring unavailable: \(error.localizedDescription)")
+        }
+    }
+
+    func restartAudioMonitoringIfNeeded() async {
+        await stopAudioMonitoring()
+        await startAudioMonitoringIfNeeded()
+    }
+
+    func stopAudioMonitoring() async {
+        audioLevelMonitorService.audioActivityHandler = nil
+        try? await audioLevelMonitorService.stop()
     }
 
     // MARK: - Public Methods
@@ -245,7 +348,8 @@ final class RecorderViewModel {
 
     /// Starts a new recording session
     func startRecording() async {
-        permissionService.updatePermissionStates()
+        refreshMenuState()
+        await stopAudioMonitoring()
 
         guard canStartRecording else {
             logger.warning("Cannot start recording with the current mode and source settings")
@@ -258,6 +362,14 @@ final class RecorderViewModel {
         do {
             state = .recording
             lastError = nil
+            lastRecordingAudioWarnings = []
+            audioHealth.reset()
+            recordingMicrophoneDisplayName = audioDeviceService.microphoneDisplayName(for: settings.selectedMicrophoneID)
+            assetWriter.audioActivityHandler = { [weak self] source, level in
+                Task { @MainActor [weak self] in
+                    self?.recordAudioSample(source: source, level: level)
+                }
+            }
 
             logger.info("Starting recording sequence...")
 
@@ -318,12 +430,13 @@ final class RecorderViewModel {
                     with: settings,
                     videoSize: videoSize,
                     sourceRect: selectedSourceRect,
+                    microphoneDeviceID: audioDeviceService.resolvedMicrophoneID(for: settings.selectedMicrophoneID),
                     captureVideo: settings.recordVideo
                 )
             } else if settings.recordAudio && settings.captureMicrophone {
                 logger.info("Starting microphone-only recording...")
                 try await microphoneCaptureService.start(
-                    deviceID: settings.selectedMicrophoneID,
+                    deviceID: audioDeviceService.resolvedMicrophoneID(for: settings.selectedMicrophoneID),
                     sampleBufferDelegate: assetWriter
                 )
             }
@@ -343,6 +456,7 @@ final class RecorderViewModel {
             lastError = error
             microphoneCaptureService.stop()
             assetWriter.cancel()
+            assetWriter.audioActivityHandler = nil
             cameraSession.stop()
             selectionBorderFrame.dismiss()
             settings.stopAccessingOutputDirectory()
@@ -369,6 +483,9 @@ final class RecorderViewModel {
 
             // Finalize file
             let outputURL = try await assetWriter.finishWriting()
+            let audioWarnings = audioWarningMessages(from: assetWriter.lastAudioWriteSummary)
+            lastRecordingAudioWarnings = audioWarnings
+            assetWriter.audioActivityHandler = nil
 
             state = .idle
             recordingDuration = 0
@@ -379,7 +496,7 @@ final class RecorderViewModel {
             try? await Task.sleep(for: .milliseconds(100))
 
             // Send notification
-            notificationService.sendRecordingSavedNotification(fileURL: outputURL)
+            notificationService.sendRecordingSavedNotification(fileURL: outputURL, warnings: audioWarnings)
 
             settings.stopAccessingOutputDirectory()
 
@@ -388,6 +505,7 @@ final class RecorderViewModel {
             lastError = error
             microphoneCaptureService.stop()
             assetWriter.cancel()
+            assetWriter.audioActivityHandler = nil
             settings.stopAccessingOutputDirectory()
             notificationService.sendRecordingFailedNotification(error: error)
             logger.error("Failed to stop recording: \(error.localizedDescription)")
@@ -435,6 +553,20 @@ final class RecorderViewModel {
         recordingTimer?.invalidate()
         recordingTimer = nil
         recordingStartTime = nil
+    }
+
+    private func recordAudioSample(source: RecordingAudioSource, level: Float) {
+        var updatedAudioHealth = audioHealth
+        updatedAudioHealth.recordSample(source: source, level: level)
+        audioHealth = updatedAudioHealth
+    }
+
+    private func audioWarningMessages(from summary: RecordingAudioWriteSummary) -> [String] {
+        summary.warningMessages(
+            expectsSystemAudio: settings.recordAudio && settings.captureSystemAudio,
+            expectsMicrophoneAudio: settings.recordAudio && settings.captureMicrophone,
+            microphoneDisplayName: recordingMicrophoneDisplayName
+        )
     }
 
     // MARK: - Helper Methods
@@ -492,6 +624,18 @@ final class RecorderViewModel {
         }
 
         return SCContentFilter(display: display, excludingWindows: [])
+    }
+
+    private func idleAudioMonitoringFilter() async throws -> SCContentFilter? {
+        if settings.needsSharedContent, let selectedContentFilter {
+            return selectedContentFilter
+        }
+
+        if settings.isAudioOnlyMode && settings.captureSystemAudio {
+            return try await resolveCaptureFilter()
+        }
+
+        return nil
     }
 }
 

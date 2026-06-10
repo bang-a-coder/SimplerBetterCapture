@@ -9,7 +9,7 @@ import AVFoundation
 import OSLog
 
 /// Captures microphone audio without requiring ScreenCaptureKit content sharing.
-final class MicrophoneCaptureService: NSObject, @unchecked Sendable {
+nonisolated final class MicrophoneCaptureService: NSObject, @unchecked Sendable {
 
     private weak var sampleBufferDelegate: AssetWriter?
 
@@ -89,7 +89,7 @@ final class MicrophoneCaptureService: NSObject, @unchecked Sendable {
     }
 }
 
-extension MicrophoneCaptureService: AVCaptureAudioDataOutputSampleBufferDelegate {
+nonisolated extension MicrophoneCaptureService: AVCaptureAudioDataOutputSampleBufferDelegate {
     nonisolated func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,

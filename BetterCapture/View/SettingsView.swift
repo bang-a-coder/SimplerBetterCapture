@@ -199,7 +199,7 @@ struct AudioSettingsView: View {
                 if settings.captureMicrophone {
                     Section("Microphone") {
                         Picker("Input", selection: $settings.selectedMicrophoneID) {
-                            Text("System Default").tag(String?.none)
+                            Text(audioDeviceService.microphoneDisplayName(for: nil)).tag(String?.none)
                             ForEach(audioDeviceService.availableDevices) { device in
                                 Text(device.name).tag(String?.some(device.id))
                             }

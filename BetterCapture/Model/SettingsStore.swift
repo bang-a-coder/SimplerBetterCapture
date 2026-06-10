@@ -9,7 +9,7 @@ import AppKit
 import Foundation
 
 /// Video codec options for recording
-enum VideoCodec: String, CaseIterable, Identifiable {
+nonisolated enum VideoCodec: String, CaseIterable, Identifiable, Sendable {
     case h264 = "H.264"
     case hevc = "H.265"
     case proRes422 = "ProRes 422"
@@ -90,7 +90,7 @@ enum VideoCodec: String, CaseIterable, Identifiable {
 }
 
 /// Container format for output files
-enum ContainerFormat: String, CaseIterable, Identifiable {
+nonisolated enum ContainerFormat: String, CaseIterable, Identifiable, Sendable {
     case mov
     case mp4
 
@@ -135,7 +135,7 @@ enum ContainerFormat: String, CaseIterable, Identifiable {
 }
 
 /// Audio codec options
-enum AudioCodec: String, CaseIterable, Identifiable {
+nonisolated enum AudioCodec: String, CaseIterable, Identifiable, Sendable {
     case aac = "AAC"
     case pcm = "PCM"
 
@@ -143,7 +143,7 @@ enum AudioCodec: String, CaseIterable, Identifiable {
 }
 
 /// Frame rate options for recording
-enum FrameRate: Int, CaseIterable, Identifiable {
+nonisolated enum FrameRate: Int, CaseIterable, Identifiable, Sendable {
     case native = 0
     case fps24 = 24
     case fps30 = 30
@@ -180,7 +180,7 @@ enum FrameRate: Int, CaseIterable, Identifiable {
 /// Each preset defines a bits-per-pixel multiplier used to calculate the
 /// target average bitrate: `width * height * bpp * frameRate`.
 /// ProRes codecs ignore this setting since they use fixed-quality encoding.
-enum VideoQuality: String, CaseIterable, Identifiable {
+nonisolated enum VideoQuality: String, CaseIterable, Identifiable, Sendable {
     case low = "Low"
     case medium = "Medium"
     case high = "High"
@@ -217,7 +217,7 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 
 /// Describes which ScreenCaptureKit HDR configuration is active, so the
 /// ``AssetWriter`` can tag the output container with matching colorimetry.
-enum HDRPreset {
+nonisolated enum HDRPreset: Equatable, Sendable {
     /// SDR capture — no HDR color properties needed.
     case sdr
 

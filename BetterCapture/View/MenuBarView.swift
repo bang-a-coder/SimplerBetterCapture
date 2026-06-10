@@ -14,10 +14,71 @@ struct MenuBarView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.dismiss) private var dismiss
     @State private var currentPreview: NSImage?
+    @State private var menuContentHeight: CGFloat = 720
 
     private var isRecording: Bool { viewModel.isRecording }
 
     var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                content
+            }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { newHeight in
+                menuContentHeight = newHeight
+            }
+        }
+        .frame(width: 320)
+        .frame(height: menuHeight)
+        .background(.ultraThinMaterial)
+        .onAppear {
+            viewModel.refreshMenuState()
+            Task {
+                await viewModel.startAudioMonitoringIfNeeded()
+            }
+        }
+        .onDisappear {
+            Task {
+                await viewModel.stopAudioMonitoring()
+            }
+        }
+        .onChange(of: viewModel.settings.recordAudio) {
+            Task {
+                await viewModel.restartAudioMonitoringIfNeeded()
+            }
+        }
+        .onChange(of: viewModel.settings.captureSystemAudio) {
+            Task {
+                await viewModel.restartAudioMonitoringIfNeeded()
+            }
+        }
+        .onChange(of: viewModel.settings.captureMicrophone) {
+            Task {
+                await viewModel.restartAudioMonitoringIfNeeded()
+            }
+        }
+        .onChange(of: viewModel.settings.selectedMicrophoneID) {
+            Task {
+                await viewModel.restartAudioMonitoringIfNeeded()
+            }
+        }
+    }
+
+    private var menuHeight: CGFloat {
+        min(max(menuContentHeight, 120), maximumMenuHeight)
+    }
+
+    private var maximumMenuHeight: CGFloat {
+        guard let visibleFrame = NSScreen.main?.visibleFrame else {
+            return 720
+        }
+
+        return min(820, max(360, visibleFrame.height - 24))
+    }
+
+    @ViewBuilder
+    private var content: some View {
         VStack(spacing: 0) {
             // Permission status banner (only when idle)
             if !isRecording && (
@@ -57,58 +118,58 @@ struct MenuBarView: View {
                 .padding(.top, 8)
             }
 
-            MenuBarDivider()
-
-            if viewModel.requiresManualContentSelection {
-                ContentSelectionButton(viewModel: viewModel) { dismiss() }
-                    .disabled(isRecording)
-            } else if viewModel.usesAutomaticSharedAudioDisplay {
-                AutomaticDisplayAudioRow()
-            }
-
-            // Preview thumbnail
-            if viewModel.settings.recordVideo, viewModel.hasContentSelected {
-                PreviewThumbnailView(
-                    previewImage: currentPreview,
-                    isLivePreviewActive: viewModel.previewService.isCapturing,
-                    onStartLivePreview: {
-                        Task {
-                            await viewModel.startPreview()
-                        }
-                    },
-                    onStopLivePreview: {
-                        Task {
-                            await viewModel.stopPreview()
-                        }
-                    }
-                )
-                .onChange(of: viewModel.previewService.previewImage) { _, newImage in
-                    currentPreview = newImage
-                }
-                .onAppear {
-                    currentPreview = viewModel.previewService.previewImage
-                }
+            if viewModel.showsCaptureContextSection {
+                MenuBarDivider()
 
                 if viewModel.requiresManualContentSelection {
-                    Button {
-                        Task {
-                            await viewModel.resetAreaSelection()
+                    ContentSelectionButton(viewModel: viewModel) { dismiss() }
+                        .disabled(isRecording)
+                } else if viewModel.usesAutomaticSharedAudioDisplay {
+                    AutomaticDisplayAudioRow()
+                }
+
+                // Preview thumbnail
+                if viewModel.settings.recordVideo, viewModel.hasContentSelected {
+                    PreviewThumbnailView(
+                        previewImage: currentPreview,
+                        isLivePreviewActive: viewModel.previewService.isCapturing,
+                        onStartLivePreview: {
+                            Task {
+                                await viewModel.startPreview()
+                            }
+                        },
+                        onStopLivePreview: {
+                            Task {
+                                await viewModel.stopPreview()
+                            }
                         }
-                    } label: {
-                        Text("Reset Selection")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(.gray.opacity(0.15), in: .rect(cornerRadius: 6))
+                    )
+                    .onChange(of: viewModel.previewService.previewImage) { _, newImage in
+                        currentPreview = newImage
                     }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .disabled(isRecording)
+                    .onAppear {
+                        currentPreview = viewModel.previewService.previewImage
+                    }
+
+                    if viewModel.requiresManualContentSelection {
+                        Button {
+                            Task {
+                                await viewModel.resetAreaSelection()
+                            }
+                        } label: {
+                            Text("Reset Selection")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.red)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
+                                .background(.gray.opacity(0.15), in: .rect(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 12)
+                        .disabled(isRecording)
+                    }
                 }
             }
-
-            MenuBarDivider()
 
             // Settings Sections
             Group {
@@ -123,7 +184,8 @@ struct MenuBarView: View {
 
                 AudioSettingsSection(
                     settings: viewModel.settings,
-                    audioDeviceService: viewModel.audioDeviceService
+                    audioDeviceService: viewModel.audioDeviceService,
+                    audioStatusItems: viewModel.audioStatusItems
                 )
             }
             .disabled(isRecording)
@@ -151,11 +213,6 @@ struct MenuBarView: View {
                 NSApplication.shared.terminate(nil)
             }
             .padding(.bottom, 8)
-        }
-        .frame(width: 320)
-        .background(.ultraThinMaterial)
-        .onAppear {
-            viewModel.permissionService.updatePermissionStates()
         }
     }
 }

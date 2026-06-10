@@ -102,6 +102,7 @@ final class CaptureEngine: NSObject {
         with settings: SettingsStore,
         videoSize: CGSize,
         sourceRect: CGRect? = nil,
+        microphoneDeviceID: String? = nil,
         captureVideo: Bool = true
     ) async throws {
         guard let filter = contentFilter else {
@@ -140,6 +141,7 @@ final class CaptureEngine: NSObject {
             from: settings,
             contentSize: videoSize,
             sourceRect: sourceRect,
+            microphoneDeviceID: microphoneDeviceID,
             captureVideo: captureVideo
         )
 
@@ -163,7 +165,7 @@ final class CaptureEngine: NSObject {
 
         if settings.captureMicrophone {
             try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: microphoneSampleQueue)
-            logger.info("Added microphone output (device: \(settings.selectedMicrophoneID ?? "default"))")
+            logger.info("Added microphone output (device: \(microphoneDeviceID ?? "default"))")
         }
 
         logger.info(
@@ -210,6 +212,7 @@ final class CaptureEngine: NSObject {
         from settings: SettingsStore,
         contentSize: CGSize,
         sourceRect: CGRect? = nil,
+        microphoneDeviceID: String? = nil,
         captureVideo: Bool = true
     ) -> SCStreamConfiguration {
         let config: SCStreamConfiguration
@@ -277,8 +280,8 @@ final class CaptureEngine: NSObject {
 
         // Microphone settings - requires full TCC screen recording permission
         config.captureMicrophone = settings.captureMicrophone
-        if let microphoneID = settings.selectedMicrophoneID {
-            config.microphoneCaptureDeviceID = microphoneID
+        if let microphoneDeviceID {
+            config.microphoneCaptureDeviceID = microphoneDeviceID
         }
 
         // Presenter Overlay: always show the alert so the user knows overlay is available

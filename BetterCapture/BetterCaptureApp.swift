@@ -28,7 +28,7 @@ struct BetterCaptureApp: App {
         .menuBarExtraStyle(.window)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                viewModel.permissionService.updatePermissionStates()
+                viewModel.refreshMenuState()
             }
         }
 
